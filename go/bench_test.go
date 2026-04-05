@@ -4,7 +4,7 @@ import (
     "fmt"
     "math/rand"
     "testing"
-    "github.com/flxch/sliding"
+    "github.com/flxch/sliding_window/go/sliding"
 )
 
 

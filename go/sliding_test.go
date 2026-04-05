@@ -5,7 +5,7 @@ import (
     "math/rand"
     "slices"
     "testing"
-    "github.com/flxch/sliding"
+    "github.com/flxch/sliding_window/go/sliding"
 )
 
 
