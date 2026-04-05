@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chat Viewer</title>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+
+<style>
+body { font-family: Arial; margin:0; background:#f5f5f5; color:#000;}
+.dark { background:#1e1e1e; color:#ddd;}
+
+/* Toolbar */
+#toolbar {
+    position:sticky; top:0; z-index:100;
+    padding:10px; background:#333; color:white;
+    display:flex; gap:10px; align-items:center;
+}
+
+#toolbar button, #toolbar input, .file-label {
+    height:32px; padding:6px 10px; font-size:14px;
+    display:flex; align-items:center; cursor:pointer;
+}
+
+#toolbar input { flex:1; }
+
+.file-label { background:#555; color:white; border-radius:4px;}
+#fileInput { display:none; }
+
+#chat { padding:20px; }
+
+/* Bubbles */
+.bubble {
+    max-width:60%;
+    padding:20px 12px 12px 12px;
+    margin:10px;
+    border-radius:12px;
+    position:relative;
+    cursor:pointer;
+    overflow:hidden;
+}
+
+.human { background:#d0e6ff; margin-right:auto;}
+.assistant { background:#d8ffd8; margin-left:auto;}
+
+.collapsed { max-height:120px;}
+
+/* Badge index */
+.index {
+    position:absolute;
+    top:6px;
+    font-size:11px;
+    padding:2px 6px;
+    border-radius:10px;
+    font-weight:bold;
+    background:rgba(0,0,0,0.1);
+    color:#333;
+}
+
+.assistant .index { left:6px; background:rgba(0,150,0,0.2);}
+.human .index { right:6px; background:rgba(0,100,200,0.2);}
+
+.dark .index { color:#eee;}
+.dark .assistant .index { background:rgba(0,200,0,0.3);}
+.dark .human .index { background:rgba(0,150,255,0.3);}
+
+.filename { font-size:12px; color:gray; margin-bottom:5px;}
+
+/* Buttons in bubbles */
+.raw-btn, .markdown-btn {
+    position:absolute;
+    font-size:10px;
+    padding:2px 6px;
+    border-radius:6px;
+    cursor:pointer;
+}
+.raw-btn { background:#444; color:white;}
+.markdown-btn { color:white;}
+.human .raw-btn { left:6px; top:24px;}
+.human .markdown-btn { left:90px; top:24px;}
+.assistant .raw-btn { right:90px; top:24px;}
+.assistant .markdown-btn { right:6px; top:24px;}
+.markdown-on { background:green;}
+.markdown-off { background:gray;}
+
+/* Search highlights */
+mark { background:yellow; }
+.current-match { background:orange !important; }
+
+/* Code blocks */
+pre { background:#222; color:#eee; padding:10px; white-space:pre-wrap; }
+
+/* Dark mode fixes */
+.dark .bubble { color:#eee;}
+.dark .human { background:#2a4a66;}
+.dark .assistant { background:#2f5c2f;}
+.dark pre { background:#111; }
+
+/* Jump highlight */
+.jump-highlight { outline: 3px solid red; transition: outline 1s ease; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+<label class="file-label">Browse JSON<input type="file" id="fileInput"></label>
+<button onclick="exportPDF()">Export PDF</button>
+<button onclick="toggleFoldAll()">Fold/Unfold</button>
+<button onclick="toggleDark()">Dark/Light</button>
+
+<input type="text" id="searchBox" placeholder="Search...">
+<button onclick="prevMatch()">◀</button>
+<button onclick="nextMatch()">▶</button>
+
+<input type="text" id="jumpInput" placeholder="Round or index (e.g., 4 or 4.2)">
+<button onclick="jumpRound(-1)">⬆</button>
+<button onclick="jumpRound(1)">⬇</button>
+</div>
+
+<div id="chat"></div>
+
+<script>
+let matches=[], currentMatch=-1, allCollapsed=true;
+let rounds=[];
+
+function escapeHTML(t){ return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function exportPDF(){ alert("PDF export is not yet implemented."); }
+function toggleFoldAll(){ allCollapsed=!allCollapsed; document.querySelectorAll(".bubble").forEach(b=>b.classList.toggle("collapsed", allCollapsed)); }
+function toggleDark(){ document.body.classList.toggle("dark"); }
+
+document.getElementById("fileInput").addEventListener("change", e=>{
+    const file=e.target.files[0];
+    const reader=new FileReader();
+    reader.onload=()=>{
+        try{ const json=JSON.parse(reader.result); renderChat(json); } 
+        catch(err){ alert("Invalid JSON: "+err.message); }
+    };
+    reader.readAsText(file);
+});
+
+function extractBubbles(msg){
+    let bubbles=[];
+    if(Array.isArray(msg.content)){
+        msg.content.forEach(c=>{
+            let text="", filename=null;
+            if(c.type==="text") text=c.text||"";
+            else if(c.type==="tool_use"){
+                text=c.input?.file_text||"";
+                filename=c.input?.path?.split("/").pop();
+            } else text="no text content ("+c.type+")";
+            bubbles.push({text, filename, raw:c});
+        });
+    }
+    if(Array.isArray(msg.attachments)){
+        msg.attachments.forEach(a=>{
+            if(a.file_type==="txt"){
+                bubbles.push({text:a.extracted_content||"", filename:a.filename, raw:a});
+            }
+        });
+    }
+    return bubbles;
+}
+
+function renderChat(data){
+    const chat=document.getElementById("chat"); chat.innerHTML="";
+    
+    // Show name at top if present
+    if(typeof data.name === "string" && data.name.trim() !== ""){
+        const title=document.createElement("div");
+        title.innerText = data.name;
+        title.style.textAlign = "center";
+        title.style.fontWeight = "bold";
+        title.style.fontSize = "1.3em";
+        title.style.marginBottom = "20px";
+        chat.appendChild(title);
+    }
+
+    rounds=[]; 
+    let round=0, lastSender=null;
+    data.chat_messages.forEach(msg=>{
+        if(msg.sender!==lastSender){ round++; lastSender=msg.sender; rounds.push([]);}
+        let msgIndex=0;
+        extractBubbles(msg).forEach(b=>{
+            msgIndex++;
+            const div=document.createElement("div");
+            div.className="bubble collapsed "+msg.sender;
+            div.dataset.round=round; div.dataset.index=round+"."+msgIndex;
+            rounds[round-1].push(div);
+
+            const idx=document.createElement("div"); idx.className="index"; idx.innerText=round+"."+msgIndex; div.appendChild(idx);
+
+            const raw=document.createElement("div"); raw.className="raw-btn"; raw.innerText="Raw JSON";
+            raw.onclick=e=>{ e.stopPropagation(); const w=window.open(); w.document.write("<pre>"+JSON.stringify(b.raw,null,2)+"</pre>"); };
+            div.appendChild(raw);
+
+            const md=document.createElement("div"); md.className="markdown-btn markdown-on"; md.innerText="Markdown"; md.dataset.markdown="true";
+            div.dataset.md=marked.parse(b.text||""); div.dataset.pre="<pre>"+escapeHTML(b.text||"")+"</pre>";
+            md.onclick=e=>{
+                e.stopPropagation();
+                const c=div.querySelector(".content");
+                const on=md.dataset.markdown==="true";
+                if(on){ c.innerHTML=div.dataset.pre; md.dataset.markdown="false"; md.classList.replace("markdown-on","markdown-off"); } 
+                else { c.innerHTML=div.dataset.md; md.dataset.markdown="true"; md.classList.replace("markdown-off","markdown-on"); }
+                hljs.highlightAll();
+            };
+            div.appendChild(md);
+
+            if(b.filename){ const f=document.createElement("div"); f.className="filename"; f.innerText=b.filename; div.appendChild(f); }
+
+            const content=document.createElement("div"); content.className="content"; content.innerHTML=div.dataset.md; div.appendChild(content);
+            div.onclick=()=>div.classList.toggle("collapsed");
+
+            chat.appendChild(div);
+        });
+    });
+    hljs.highlightAll();
+}
+
+// Search functions
+document.getElementById("searchBox").addEventListener("input", search);
+function search(){
+    const term=document.getElementById("searchBox").value;
+    matches=[]; currentMatch=-1;
+    document.querySelectorAll(".bubble").forEach(b=>{
+        const c=b.querySelector(".content");
+        const mdOn=b.querySelector(".markdown-btn").dataset.markdown==="true";
+        let html=mdOn?b.dataset.md:b.dataset.pre;
+        if(term){
+            const re=new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),"gi");
+            html=html.replace(re,m=>`<mark>${m}</mark>`);
+        }
+        c.innerHTML=html;
+        c.querySelectorAll("mark").forEach(m=>matches.push(m));
+    });
+    nextMatch();
+}
+function nextMatch(){ if(!matches.length) return; matches.forEach(m=>m.classList.remove("current-match")); currentMatch=(currentMatch+1)%matches.length; matches[currentMatch].classList.add("current-match"); matches[currentMatch].scrollIntoView({behavior:"smooth",block:"center"});}
+function prevMatch(){ if(!matches.length) return; matches.forEach(m=>m.classList.remove("current-match")); currentMatch=(currentMatch-1+matches.length)%matches.length; matches[currentMatch].classList.add("current-match"); matches[currentMatch].scrollIntoView({behavior:"smooth",block:"center"});}
+
+// Jump input via Enter
+const jumpInput=document.getElementById("jumpInput");
+jumpInput.addEventListener("keydown", e=>{ if(e.key==="Enter") jump(); });
+
+function jump(){
+    const val=jumpInput.value.trim();
+    if(val.includes(".")){
+        const el=document.querySelector(`.bubble[data-index='${val}']`);
+        if(!el){ alert("Bubble not found"); return; }
+        el.scrollIntoView({behavior:"smooth", block:"center"}); el.classList.remove("collapsed");
+        el.classList.add("jump-highlight"); setTimeout(()=>el.classList.remove("jump-highlight"),1500);
+    } else {
+        const r=parseInt(val); if(!r) return;
+        const el=document.querySelector(`.bubble[data-round='${r}']`);
+        if(!el){ alert("Round not found"); return; }
+        el.scrollIntoView({behavior:"smooth", block:"center"}); el.classList.remove("collapsed");
+    }
+}
+
+// Up/Down buttons scroll to top of round, accounting for toolbar
+let currentRoundIndex=0;
+function jumpRound(dir){
+    if(!rounds.length) return;
+    currentRoundIndex = Math.max(0, Math.min(currentRoundIndex + dir, rounds.length - 1));
+    const el = rounds[currentRoundIndex][0];
+    if(el){
+        const toolbarHeight = document.getElementById("toolbar").offsetHeight;
+        const top = el.getBoundingClientRect().top + window.scrollY - toolbarHeight - 5;
+        window.scrollTo({top: top, behavior: "smooth"});
+        el.classList.remove("collapsed");
+    }
+}
+</script>
+</body>
+</html>
