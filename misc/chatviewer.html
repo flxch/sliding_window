@@ -4,271 +4,1276 @@
 <meta charset="UTF-8">
 <title>Chat Viewer</title>
 
+<!--
+  ============================================================
+  CHAT VIEWER
+  ============================================================
+  Visualizes JSON-encoded chat logs between a user ("human")
+  and an AI agent ("assistant") as side-by-side speech bubbles.
+
+  Dependencies (loaded from CDN):
+    • marked.js      – Markdown → HTML rendering
+    • highlight.js   – Syntax highlighting for code blocks
+    • html2canvas    – DOM → canvas (used for PDF export)
+    • jsPDF          – Canvas → PDF generation
+  ============================================================
+-->
+
+<!-- Markdown parser -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
+
+<!-- Syntax highlighting: stylesheet + runtime -->
+<link  rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
 
+<!-- PDF export libraries -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
 <style>
-body { font-family: Arial; margin:0; background:#f5f5f5; color:#000;}
-.dark { background:#1e1e1e; color:#ddd;}
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
 
-/* Toolbar */
+body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    margin: 0;
+    background: #f5f5f5;
+    color: #000;
+}
+
+/* Dark mode – applied by toggling .dark on <body> */
+body.dark {
+    background: #1e1e1e;
+    color: #ddd;
+}
+
+/* ============================================================
+   TOOLBAR
+   Always visible at the top of the viewport (sticky).
+   ============================================================ */
 #toolbar {
-    position:sticky; top:0; z-index:100;
-    padding:10px; background:#333; color:white;
-    display:flex; gap:10px; align-items:center;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    padding: 10px;
+    background: #333;
+    color: white;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;          /* wraps on narrow viewports */
 }
 
-#toolbar button, #toolbar input, .file-label {
-    height:32px; padding:6px 10px; font-size:14px;
-    display:flex; align-items:center; cursor:pointer;
+#toolbar button,
+#toolbar input,
+.file-label {
+    height: 32px;
+    padding: 6px 10px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    border: none;
+    border-radius: 4px;
 }
 
-#toolbar input { flex:1; }
+#toolbar button {
+    background: #555;
+    color: white;
+}
 
-.file-label { background:#555; color:white; border-radius:4px;}
-#fileInput { display:none; }
+#toolbar button:hover { background: #777; }
 
-#chat { padding:20px; }
+#toolbar input {
+    flex: 1;
+    background: #444;
+    color: white;
+    min-width: 80px;
+}
 
-/* Bubbles */
+#toolbar input::placeholder { color: #aaa; }
+
+/* Hidden native file input; styled via .file-label */
+.file-label {
+    background: #555;
+    color: white;
+}
+
+#fileInput { display: none; }
+
+/* ============================================================
+   CHAT CONTAINER
+   ============================================================ */
+#chat { padding: 20px; }
+
+/* ============================================================
+   SPEECH BUBBLES
+   ============================================================ */
 .bubble {
-    max-width:60%;
-    padding:20px 12px 12px 12px;
-    margin:10px;
-    border-radius:12px;
-    position:relative;
-    cursor:pointer;
-    overflow:hidden;
+    max-width: 60%;
+    padding: 20px 12px 12px 12px;
+    margin: 10px;
+    border-radius: 12px;
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+    transition: max-height 0.2s ease;
 }
 
-.human { background:#d0e6ff; margin-right:auto;}
-.assistant { background:#d8ffd8; margin-left:auto;}
+/* Human (user) bubbles: left-aligned, blue tint */
+.bubble.human {
+    background: #d0e6ff;
+    margin-right: auto;
+}
 
-.collapsed { max-height:120px;}
+/* Assistant (AI) bubbles: right-aligned, green tint */
+.bubble.assistant {
+    background: #d8ffd8;
+    margin-left: auto;
+}
 
-/* Badge index */
+/* Collapsed state: only show a preview (~3 lines) */
+.bubble.collapsed { max-height: 120px; }
+
+/* ---- Dark mode bubble colours ---- */
+body.dark .bubble           { color: #eee; }
+body.dark .bubble.human     { background: #2a4a66; }
+body.dark .bubble.assistant { background: #2f5c2f; }
+
+/* ============================================================
+   ROUND / INDEX BADGE
+   Small "n.m" label inside each bubble.
+   ============================================================ */
 .index {
-    position:absolute;
-    top:6px;
-    font-size:11px;
-    padding:2px 6px;
-    border-radius:10px;
-    font-weight:bold;
-    background:rgba(0,0,0,0.1);
-    color:#333;
+    position: absolute;
+    top: 6px;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 0.1);
+    color: #333;
 }
 
-.assistant .index { left:6px; background:rgba(0,150,0,0.2);}
-.human .index { right:6px; background:rgba(0,100,200,0.2);}
-
-.dark .index { color:#eee;}
-.dark .assistant .index { background:rgba(0,200,0,0.3);}
-.dark .human .index { background:rgba(0,150,255,0.3);}
-
-.filename { font-size:12px; color:gray; margin-bottom:5px;}
-
-/* Buttons in bubbles */
-.raw-btn, .markdown-btn {
-    position:absolute;
-    font-size:10px;
-    padding:2px 6px;
-    border-radius:6px;
-    cursor:pointer;
+/* Human badge: top-right corner */
+.bubble.human .index {
+    right: 6px;
+    background: rgba(0, 100, 200, 0.2);
 }
-.raw-btn { background:#444; color:white;}
-.markdown-btn { color:white;}
-.human .raw-btn { left:6px; top:24px;}
-.human .markdown-btn { left:90px; top:24px;}
-.assistant .raw-btn { right:90px; top:24px;}
-.assistant .markdown-btn { right:6px; top:24px;}
-.markdown-on { background:green;}
-.markdown-off { background:gray;}
 
-/* Search highlights */
-mark { background:yellow; }
-.current-match { background:orange !important; }
+/* Assistant badge: top-left corner */
+.bubble.assistant .index {
+    left: 6px;
+    background: rgba(0, 150, 0, 0.2);
+}
 
-/* Code blocks */
-pre { background:#222; color:#eee; padding:10px; white-space:pre-wrap; }
+body.dark .index                  { color: #eee; }
+body.dark .bubble.human .index    { background: rgba(0, 150, 255, 0.3); }
+body.dark .bubble.assistant .index{ background: rgba(0, 200, 0, 0.3); }
 
-/* Dark mode fixes */
-.dark .bubble { color:#eee;}
-.dark .human { background:#2a4a66;}
-.dark .assistant { background:#2f5c2f;}
-.dark pre { background:#111; }
+/* ============================================================
+   FILENAME LABEL (shown for tool_use bubbles with a path)
+   ============================================================ */
+.filename {
+    font-size: 12px;
+    color: gray;
+    margin-bottom: 5px;
+}
 
-/* Jump highlight */
-.jump-highlight { outline: 3px solid red; transition: outline 1s ease; }
+/* ============================================================
+   IN-BUBBLE VIEW SWITCHER  (JSON | Markdown | Text tabs)
+   ============================================================ */
+
+/* Container: positioned at the top of the bubble, same row as badge */
+.view-switcher {
+    position: absolute;
+    top: 4px;
+    display: flex;
+    gap: 2px;
+}
+
+.bubble.human     .view-switcher { left: 6px; }
+.bubble.assistant .view-switcher { right: 6px; }
+
+/* Individual tab buttons */
+.view-tab {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    background: #888;
+    color: white;
+    opacity: 0.7;
+    transition: opacity 0.15s, background 0.15s;
+}
+
+.view-tab:hover  { opacity: 1; }
+.view-tab.active { opacity: 1; }
+
+/* Per-mode accent colours when active */
+.view-tab.tab-json.active       { background: #b06000; }
+.view-tab.tab-markdown.active   { background: #1a7a1a; }
+.view-tab.tab-text.active       { background: #445; }
+
+/* ---- Pretty-printed JSON colours ---- */
+.json-view {
+    font-family: Courier, monospace;
+    font-size: 0.85em;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    border-radius: 6px;
+    padding: 10px;
+}
+.json-key    { color: #89b4fa; }
+.json-str    { color: #a6e3a1; }
+.json-num    { color: #fab387; }
+.json-bool   { color: #f38ba8; }
+.json-null   { color: #f38ba8; }
+
+/* ============================================================
+   SEARCH HIGHLIGHTS
+   ============================================================ */
+mark                { background: yellow; }
+mark.current-match  { background: orange !important; }
+
+/* ============================================================
+   CODE BLOCKS (inside markdown-rendered content)
+   ============================================================ */
+pre {
+    background: #222;
+    color: #eee;
+    padding: 10px;
+    white-space: pre-wrap;
+    border-radius: 6px;
+    font-family: Courier, monospace;
+    font-size: 0.9em;
+}
+
+body.dark pre { background: #111; }
+
+/* Plain-text attachment: monospaced, preserves whitespace */
+.plain-text-content {
+    font-family: Courier, monospace;
+    font-size: 0.88em;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ============================================================
+   JUMP HIGHLIGHT (temporary red outline after navigation)
+   ============================================================ */
+.jump-highlight {
+    outline: 3px solid red;
+    transition: outline 1s ease;
+}
+
+/* ============================================================
+   PDF EXPORT – loading overlay
+   ============================================================ */
+#pdf-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    color: white;
+    font-size: 1.2em;
+    gap: 16px;
+}
+
+#pdf-overlay.visible { display: flex; }
+
+#pdf-spinner {
+    width: 48px; height: 48px;
+    border: 5px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 
+<!-- ============================================================
+     TOOLBAR
+     ============================================================ -->
 <div id="toolbar">
-<label class="file-label">Browse JSON<input type="file" id="fileInput"></label>
-<button onclick="exportPDF()">Export PDF</button>
-<button onclick="toggleFoldAll()">Fold/Unfold</button>
-<button onclick="toggleDark()">Dark/Light</button>
+    <!-- File picker: hidden <input> triggered by styled <label> -->
+    <label class="file-label">
+        Browse JSON
+        <input type="file" id="fileInput" accept=".json">
+    </label>
 
-<input type="text" id="searchBox" placeholder="Search...">
-<button onclick="prevMatch()">◀</button>
-<button onclick="nextMatch()">▶</button>
+    <button onclick="exportPDF()">Export PDF</button>
+    <button onclick="toggleFoldAll()">Fold / Unfold</button>
+    <button onclick="toggleDark()">Dark / Light</button>
 
-<input type="text" id="jumpInput" placeholder="Round or index (e.g., 4 or 4.2)">
-<button onclick="jumpRound(-1)">⬆</button>
-<button onclick="jumpRound(1)">⬇</button>
+    <!-- Search field + previous/next navigation -->
+    <input type="text" id="searchBox" placeholder="Search…">
+    <button onclick="prevMatch()" title="Previous match">◀</button>
+    <button onclick="nextMatch()" title="Next match">▶</button>
+
+    <!-- Round / bubble jump field + up/down navigation -->
+    <input type="text" id="jumpInput" placeholder="Round or index (e.g. 4 or 4.2)">
+    <button onclick="jumpRound(-1)" title="Previous round">⬆</button>
+    <button onclick="jumpRound(1)"  title="Next round">⬇</button>
 </div>
 
+<!-- ============================================================
+     CHAT AREA
+     ============================================================ -->
 <div id="chat"></div>
 
+<!-- ============================================================
+     PDF EXPORT OVERLAY
+     ============================================================ -->
+<div id="pdf-overlay">
+    <div id="pdf-spinner"></div>
+    <div id="pdf-status">Preparing PDF…</div>
+</div>
+
+<!-- ============================================================
+     JAVASCRIPT
+     ============================================================ -->
 <script>
-let matches=[], currentMatch=-1, allCollapsed=true;
-let rounds=[];
+/* ==============================================================
+   STATE
+   ============================================================== */
 
-function escapeHTML(t){ return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-function exportPDF(){ alert("PDF export is not yet implemented."); }
-function toggleFoldAll(){ allCollapsed=!allCollapsed; document.querySelectorAll(".bubble").forEach(b=>b.classList.toggle("collapsed", allCollapsed)); }
-function toggleDark(){ document.body.classList.toggle("dark"); }
+/** Index of the currently visible search match (-1 = none). */
+let currentMatch = -1;
 
-document.getElementById("fileInput").addEventListener("change", e=>{
-    const file=e.target.files[0];
-    const reader=new FileReader();
-    reader.onload=()=>{
-        try{ const json=JSON.parse(reader.result); renderChat(json); } 
-        catch(err){ alert("Invalid JSON: "+err.message); }
+/** All <mark> elements produced by the last search. */
+let matches = [];
+
+/**
+ * Whether the global fold state is "all collapsed".
+ * Starts true so every bubble opens on first "Fold/Unfold" click.
+ */
+let allCollapsed = true;
+
+/**
+ * rounds[i] is an array of .bubble elements belonging to round i+1.
+ * Used by the up/down round-navigation buttons.
+ */
+let rounds = [];
+
+/** The round currently targeted by the ⬆/⬇ buttons (0-based). */
+let currentRoundIndex = 0;
+
+
+/* ==============================================================
+   UTILITY HELPERS
+   ============================================================== */
+
+/**
+ * Escape a plain string so it can be safely embedded inside HTML.
+ * Replaces the five characters that have special meaning in HTML.
+ *
+ * @param {string} t  Raw text to escape.
+ * @returns {string}  HTML-safe version of the input.
+ */
+function escapeHTML(t) {
+    return t
+        .replace(/&/g,  "&amp;")
+        .replace(/</g,  "&lt;")
+        .replace(/>/g,  "&gt;")
+        .replace(/"/g,  "&quot;")
+        .replace(/'/g,  "&#39;");
+}
+
+
+/* ==============================================================
+   MARKDOWN HEURISTICS
+   ============================================================== */
+
+/**
+ * Determines whether a string is likely Markdown-formatted text.
+ *
+ * Design principles:
+ *
+ *  1. STRUCTURAL SIGNALS DOMINATE.  A single unambiguous structural
+ *     element (ATX heading, fenced code block) is strong evidence on
+ *     its own.  Inline signals (bold, italic, inline code) are weaker
+ *     individually but combine.
+ *
+ *  2. COUNT PROPORTIONS, NOT JUST PRESENCE.  Rather than +1 for "any
+ *     list item exists", the score scales with the fraction of lines
+ *     that are list items, up to a cap.  This prevents one stray "-"
+ *     from inflating the score.
+ *
+ *  3. REQUIRE PROPER PAIRING for inline markup.  Bold/italic markers
+ *     must have a matching closing delimiter on the same line and must
+ *     not be surrounded by word characters on both sides (which would
+ *     suggest they are operators or bullet points in plain text).
+ *
+ *  4. PENALISE NON-MARKDOWN CONTENT.  Stack traces, raw HTML/XML,
+ *     JSON-like structures, file paths, and very short snippets all
+ *     lower the score.
+ *
+ *  5. CALIBRATED THRESHOLD.  The threshold is set so that a single
+ *     clear structural signal (score ≥ 3) is sufficient, while weak
+ *     inline signals alone (score ≈ 1-2) are not.
+ *
+ * @param {string} text  The raw text to inspect.
+ * @returns {boolean}    true if the text is likely Markdown.
+ */
+function isLikelyMarkdown(text) {
+    if (!text || text.trim().length === 0) return false;
+
+    const trimmed = text.trim();
+    const lines   = trimmed.split("\n");
+    const nLines  = lines.length;
+    let score = 0;
+
+    // ------------------------------------------------------------------
+    // STRONG structural signals (each sufficient on its own when clear)
+    // ------------------------------------------------------------------
+
+    // ATX headings: lines starting with 1–6 hashes followed by a space
+    // and at least one non-space character.
+    const headingLines = lines.filter(l => /^#{1,6} +\S/.test(l)).length;
+    if (headingLines > 0) score += 3 + Math.min(headingLines - 1, 2);
+
+    // Fenced code blocks: a line that is exactly ```[optional lang]
+    // Require at least one opening fence.
+    const fenceLines = lines.filter(l => /^```\w*$/.test(l.trimEnd())).length;
+    if (fenceLines >= 2) score += 4;   // matched open + close fence
+    else if (fenceLines === 1) score += 2; // unclosed fence still suggestive
+
+    // Markdown table rows: lines containing at least two pipe characters,
+    // and a separator row (|---|) present somewhere.
+    const tableRows = lines.filter(l => (l.match(/\|/g) || []).length >= 2).length;
+    const hasSeparatorRow = lines.some(l => /^\|?[\s|:\-]+\|$/.test(l.trim()));
+    if (tableRows >= 2 && hasSeparatorRow) score += 3;
+    else if (tableRows >= 2) score += 1;
+
+    // ------------------------------------------------------------------
+    // MODERATE structural signals (proportional to how many lines match)
+    // ------------------------------------------------------------------
+
+    // Unordered list items: lines starting with "- " or "* " (not "---")
+    const ulLines = lines.filter(l => /^[ \t]*[-*] +\S/.test(l) && !/^---/.test(l)).length;
+    if (ulLines > 0) score += Math.min(ulLines, 3);  // up to 3 points
+
+    // Ordered list items: lines starting with "N. "
+    const olLines = lines.filter(l => /^[ \t]*\d+\. +\S/.test(l)).length;
+    if (olLines > 0) score += Math.min(olLines, 3);
+
+    // Blockquotes: lines starting with "> "
+    const bqLines = lines.filter(l => /^> /.test(l)).length;
+    if (bqLines > 0) score += Math.min(bqLines, 2);
+
+    // Horizontal rules (stand-alone line of ---, ***, or ___)
+    if (lines.some(l => /^([-*_]){3,}\s*$/.test(l) && l.trim().length >= 3)) score += 1;
+
+    // Setext-style headings: a line of === or --- following a non-empty line
+    for (let i = 1; i < nLines; i++) {
+        if (/^[=]{3,}\s*$/.test(lines[i]) && lines[i-1].trim().length > 0) { score += 2; break; }
+        if (/^[-]{3,}\s*$/.test(lines[i]) && lines[i-1].trim().length > 0) { score += 1; break; }
+    }
+
+    // ------------------------------------------------------------------
+    // INLINE signals (weaker; require proper pairing)
+    // ------------------------------------------------------------------
+
+    // Inline code: `...` — backtick-delimited span with content inside.
+    const inlineCodeMatches = (text.match(/`[^`\n]+`/g) || []).length;
+    if (inlineCodeMatches > 0) score += Math.min(inlineCodeMatches, 2);
+
+    // Bold: **text** or __text__ — must be properly closed on same line.
+    if (/\*\*[^\s*][^*]*\*\*/.test(text) || /__[^\s_][^_]*__/.test(text)) score += 2;
+
+    // Italic: *text* or _text_ — single delimiter, properly closed,
+    // not surrounded by word chars on both sides (avoids matching
+    // underscores in identifiers like snake_case or math like 2*3).
+    const italicStar  = (text.match(/(?<![\w*])\*(?![\s*])[^*\n]+\*(?![\w*])/g) || []).length;
+    const italicUnder = (text.match(/(?<![\w_])_(?![\s_])[^_\n]+_(?![\w_])/g) || []).length;
+    if (italicStar + italicUnder > 0) score += 1;
+
+    // Markdown links: [label](url)
+    if (/\[[^\]]+\]\(https?:\/\/[^)]+\)/.test(text)) score += 2;
+
+    // Markdown images: ![alt](url)
+    if (/!\[[^\]]*\]\([^)]+\)/.test(text)) score += 2;
+
+    // ------------------------------------------------------------------
+    // NEGATIVE signals
+    // ------------------------------------------------------------------
+
+    // Stack traces (JS/Java/Python style)
+    if (/^\s+at\s+\S+\(.*\)/m.test(text))           score -= 3;
+    if (/^Traceback \(most recent call last\)/m.test(text)) score -= 3;
+
+    // Raw HTML / XML — already rendered, not Markdown source
+    const htmlTagCount = (text.match(/<\/?[a-zA-Z][^>]*>/g) || []).length;
+    if (htmlTagCount >= 3) score -= 3;
+    else if (htmlTagCount >= 1) score -= 1;
+
+    // JSON-like structure: starts with { or [ and has "key": patterns
+    if (/^[\[{]/.test(trimmed) && /"[^"]+":/.test(text)) score -= 3;
+
+    // Looks like a file or a URL dump (plain paths/URLs, no markup)
+    if (nLines <= 3 && /^(https?:\/\/|\/)\S+$/.test(trimmed)) score -= 2;
+
+    // Very short text is unlikely to be a structured Markdown document
+    if (trimmed.length < 60) score -= 2;
+    else if (trimmed.length < 120) score -= 1;
+
+    // Single-line text with no markup at all — plain prose or a short answer
+    if (nLines === 1 && score <= 1) score -= 2;
+
+    // ------------------------------------------------------------------
+    // DECISION  (threshold calibrated so one clear structural signal wins)
+    // ------------------------------------------------------------------
+    return score >= 3;
+}
+
+
+/* ==============================================================
+   FILE LOADING
+   ============================================================== */
+
+/**
+ * Listen for the user choosing a JSON file via the file picker.
+ * Reads the file as text and hands it to renderChat().
+ */
+document.getElementById("fileInput").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+        try {
+            const json = JSON.parse(reader.result);
+            renderChat(json);
+        } catch (err) {
+            alert("Invalid JSON: " + err.message);
+        }
     };
     reader.readAsText(file);
 });
 
-function extractBubbles(msg){
-    let bubbles=[];
-    if(Array.isArray(msg.content)){
-        msg.content.forEach(c=>{
-            let text="", filename=null;
-            if(c.type==="text") text=c.text||"";
-            else if(c.type==="tool_use"){
-                text=c.input?.file_text||"";
-                filename=c.input?.path?.split("/").pop();
-            } else text="no text content ("+c.type+")";
-            bubbles.push({text, filename, raw:c});
+
+/* ==============================================================
+   DATA EXTRACTION
+   ============================================================== */
+
+/**
+ * Extracts one or more "bubble descriptor" objects from a single
+ * chat message entry.
+ *
+ * Each descriptor contains:
+ *   text     {string}       – Display text for the bubble.
+ *   filename {string|null}  – Basename of a file (tool_use with path).
+ *   isPlain  {boolean}      – true when the text should be shown as
+ *                             plain/monospaced (txt attachments not in MD).
+ *   raw      {*}            – The original JSON sub-object (for Raw JSON view).
+ *
+ * Sources:
+ *  1. msg.content[] – main message parts:
+ *       type "text"     → display c.text
+ *       type "tool_use" → display c.input.file_text; show c.input.path basename
+ *       other types     → show placeholder "no text content (TYPE)"
+ *  2. msg.attachments[] – file attachments:
+ *       file_type "txt" → display a.extracted_content (monospaced if not MD)
+ *
+ * @param {Object} msg  One entry from the chat_messages array.
+ * @returns {Array}     Array of bubble descriptor objects.
+ */
+function extractBubbles(msg) {
+    const bubbles = [];
+
+    // --- 1. Process msg.content[] ---
+    if (Array.isArray(msg.content)) {
+        msg.content.forEach(c => {
+            let text     = "";
+            let filename = null;
+            let isPlain  = false;
+
+            if (c.type === "text") {
+                // Plain text message part
+                text = c.text || "";
+
+            } else if (c.type === "tool_use") {
+                // Tool invocation – display the generated file text
+                text     = c.input?.file_text || "";
+                // Extract just the filename from the full path
+                filename = c.input?.path
+                    ? c.input.path.split("/").pop()
+                    : null;
+
+            } else {
+                // Unknown content type: show a placeholder
+                text    = "no text content (" + c.type + ")";
+                isPlain = true;
+            }
+
+            bubbles.push({ text, filename, isPlain, raw: c });
         });
     }
-    if(Array.isArray(msg.attachments)){
-        msg.attachments.forEach(a=>{
-            if(a.file_type==="txt"){
-                bubbles.push({text:a.extracted_content||"", filename:a.filename, raw:a});
+
+    // --- 2. Process msg.attachments[] ---
+    if (Array.isArray(msg.attachments)) {
+        msg.attachments.forEach(a => {
+            if (a.file_type === "txt") {
+                const text = a.extracted_content || "";
+                // Treat as plain text unless the heuristic says Markdown
+                const isPlain = !isLikelyMarkdown(text);
+                bubbles.push({
+                    text,
+                    filename: a.filename || null,
+                    isPlain,
+                    raw: a
+                });
             }
         });
     }
+
     return bubbles;
 }
 
-function renderChat(data){
-    const chat=document.getElementById("chat"); chat.innerHTML="";
-    
-    // Show name at top if present
-    if(typeof data.name === "string" && data.name.trim() !== ""){
-        const title=document.createElement("div");
+
+/* ==============================================================
+   RENDERING
+   ============================================================== */
+
+/**
+ * Renders the full chat into the #chat div.
+ *
+ * Clears any existing content, then iterates over chat_messages,
+ * groups them into rounds, and builds a .bubble <div> for each
+ * bubble descriptor returned by extractBubbles().
+ *
+ * Round numbering: a new round starts whenever the sender changes.
+ * Within a round, bubbles are numbered 1, 2, 3, … so the full
+ * bubble identifier is "n.m" (round.index-in-round).
+ *
+ * @param {Object} data  The parsed JSON object from the chat file.
+ */
+function renderChat(data) {
+    const chat = document.getElementById("chat");
+    chat.innerHTML = "";          // Clear previous content
+    rounds = [];
+    currentRoundIndex = 0;
+
+    // Optional chat title centred at the top
+    if (typeof data.name === "string" && data.name.trim() !== "") {
+        const title = document.createElement("div");
         title.innerText = data.name;
-        title.style.textAlign = "center";
-        title.style.fontWeight = "bold";
-        title.style.fontSize = "1.3em";
-        title.style.marginBottom = "20px";
+        title.style.cssText =
+            "text-align:center; font-weight:bold; font-size:1.3em; margin-bottom:20px;";
         chat.appendChild(title);
     }
 
-    rounds=[]; 
-    let round=0, lastSender=null;
-    data.chat_messages.forEach(msg=>{
-        if(msg.sender!==lastSender){ round++; lastSender=msg.sender; rounds.push([]);}
-        let msgIndex=0;
-        extractBubbles(msg).forEach(b=>{
+    let round      = 0;
+    let lastSender = null;
+
+    data.chat_messages.forEach(msg => {
+        // Start a new round when the sender changes
+        if (msg.sender !== lastSender) {
+            round++;
+            lastSender = msg.sender;
+            rounds.push([]);
+        }
+
+        let msgIndex = 0;
+
+        extractBubbles(msg).forEach(b => {
             msgIndex++;
-            const div=document.createElement("div");
-            div.className="bubble collapsed "+msg.sender;
-            div.dataset.round=round; div.dataset.index=round+"."+msgIndex;
-            rounds[round-1].push(div);
+            const bubbleId = round + "." + msgIndex;  // e.g. "3.2"
 
-            const idx=document.createElement("div"); idx.className="index"; idx.innerText=round+"."+msgIndex; div.appendChild(idx);
+            // --- Compute pre-rendered HTML variants for this bubble ---
 
-            const raw=document.createElement("div"); raw.className="raw-btn"; raw.innerText="Raw JSON";
-            raw.onclick=e=>{ e.stopPropagation(); const w=window.open(); w.document.write("<pre>"+JSON.stringify(b.raw,null,2)+"</pre>"); };
-            div.appendChild(raw);
+            // Markdown variant (may be used or may fall back to plain)
+            const likelyMd = isLikelyMarkdown(b.text);
 
-            const md=document.createElement("div"); md.className="markdown-btn markdown-on"; md.innerText="Markdown"; md.dataset.markdown="true";
-            div.dataset.md=marked.parse(b.text||""); div.dataset.pre="<pre>"+escapeHTML(b.text||"")+"</pre>";
-            md.onclick=e=>{
-                e.stopPropagation();
-                const c=div.querySelector(".content");
-                const on=md.dataset.markdown==="true";
-                if(on){ c.innerHTML=div.dataset.pre; md.dataset.markdown="false"; md.classList.replace("markdown-on","markdown-off"); } 
-                else { c.innerHTML=div.dataset.md; md.dataset.markdown="true"; md.classList.replace("markdown-off","markdown-on"); }
-                hljs.highlightAll();
-            };
-            div.appendChild(md);
+            // HTML for the markdown-rendered view
+            const mdHTML = marked.parse(b.text || "");
 
-            if(b.filename){ const f=document.createElement("div"); f.className="filename"; f.innerText=b.filename; div.appendChild(f); }
+            // HTML for the plain / raw view
+            let plainHTML;
+            if (b.isPlain) {
+                // Attachment plain text: wrap in monospaced <pre>-like div
+                plainHTML =
+                    '<div class="plain-text-content">' +
+                    escapeHTML(b.text || "") +
+                    '</div>';
+            } else {
+                // Regular message: wrap in a <pre> with escaped content
+                plainHTML = "<pre>" + escapeHTML(b.text || "") + "</pre>";
+            }
 
-            const content=document.createElement("div"); content.className="content"; content.innerHTML=div.dataset.md; div.appendChild(content);
-            div.onclick=()=>div.classList.toggle("collapsed");
+            // --- Build bubble element ---
+            const div = document.createElement("div");
+            div.className  = "bubble collapsed " + msg.sender;
+            div.dataset.round = round;
+            div.dataset.index = bubbleId;
+
+            // Store both HTML variants on the element for later toggling / search
+            div.dataset.md  = mdHTML;
+            div.dataset.pre = plainHTML;
+
+            // Track this bubble under its round
+            rounds[round - 1].push(div);
+
+            // ---- Index badge ----
+            const idx = document.createElement("div");
+            idx.className  = "index";
+            idx.innerText  = bubbleId;
+            div.appendChild(idx);
+
+            // ---- Three-way view switcher: JSON | Markdown | Text ----
+            //
+            // The switcher sits in the top bar of the bubble (same row as the
+            // index badge).  For human bubbles it is on the left; for assistant
+            // bubbles it is on the right — so it never overlaps the badge.
+            //
+            // Three views are stored on the element as dataset properties:
+            //   div.dataset.md   – marked.js-rendered Markdown HTML
+            //   div.dataset.pre  – plain/monospaced HTML
+            //   div.dataset.json – pretty-printed, syntax-coloured JSON HTML
+            //
+            // The currently active view name is stored in div.dataset.view.
+
+            const switcher = document.createElement("div");
+            switcher.className = "view-switcher";
+
+            // Determine which view to show by default
+            const defaultView = likelyMd ? "markdown" : "text";
+            div.dataset.view  = defaultView;
+
+            const tabDefs = [
+                { key: "json",     label: "JSON" },
+                { key: "markdown", label: "MD"   },
+                { key: "text",     label: "Text" },
+            ];
+
+            tabDefs.forEach(({ key, label }) => {
+                const tab = document.createElement("button");
+                tab.className = "view-tab tab-" + key + (key === defaultView ? " active" : "");
+                tab.innerText = label;
+                tab.onclick = e => {
+                    e.stopPropagation();
+                    setView(div, key);
+                };
+                switcher.appendChild(tab);
+            });
+
+            div.appendChild(switcher);
+
+            // Store the pretty-printed JSON HTML once (colourised inline)
+            div.dataset.json = buildJsonHTML(b.raw);
+
+            // ---- Optional filename label ----
+            if (b.filename) {
+                const fnLabel = document.createElement("div");
+                fnLabel.className = "filename";
+                fnLabel.innerText = b.filename;
+                div.appendChild(fnLabel);
+            }
+
+            // ---- Content area ----
+            const content = document.createElement("div");
+            content.className = "content";
+            // Initial render matches the default view tab
+            content.innerHTML = likelyMd ? mdHTML : plainHTML;
+            div.appendChild(content);
+
+            // Clicking the bubble (outside buttons) toggles collapsed state
+            div.onclick = () => div.classList.toggle("collapsed");
 
             chat.appendChild(div);
         });
     });
+
+    // Apply syntax highlighting to all newly-rendered code blocks
     hljs.highlightAll();
 }
 
-// Search functions
-document.getElementById("searchBox").addEventListener("input", search);
-function search(){
-    const term=document.getElementById("searchBox").value;
-    matches=[]; currentMatch=-1;
-    document.querySelectorAll(".bubble").forEach(b=>{
-        const c=b.querySelector(".content");
-        const mdOn=b.querySelector(".markdown-btn").dataset.markdown==="true";
-        let html=mdOn?b.dataset.md:b.dataset.pre;
-        if(term){
-            const re=new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),"gi");
-            html=html.replace(re,m=>`<mark>${m}</mark>`);
-        }
-        c.innerHTML=html;
-        c.querySelectorAll("mark").forEach(m=>matches.push(m));
+
+/* ==============================================================
+   VIEW SWITCHING
+   ============================================================== */
+
+/**
+ * Switches the displayed view of a bubble to one of: "json", "markdown", "text".
+ *
+ * Updates the active tab highlight and swaps the content div's innerHTML
+ * from the pre-rendered HTML stored on the bubble's dataset.
+ *
+ * @param {HTMLElement} div  The .bubble element.
+ * @param {string}      view One of "json" | "markdown" | "text".
+ */
+function setView(div, view) {
+    div.dataset.view = view;
+
+    // Update tab highlights
+    div.querySelectorAll(".view-tab").forEach(t => {
+        t.classList.toggle("active", t.classList.contains("tab-" + view));
     });
-    nextMatch();
-}
-function nextMatch(){ if(!matches.length) return; matches.forEach(m=>m.classList.remove("current-match")); currentMatch=(currentMatch+1)%matches.length; matches[currentMatch].classList.add("current-match"); matches[currentMatch].scrollIntoView({behavior:"smooth",block:"center"});}
-function prevMatch(){ if(!matches.length) return; matches.forEach(m=>m.classList.remove("current-match")); currentMatch=(currentMatch-1+matches.length)%matches.length; matches[currentMatch].classList.add("current-match"); matches[currentMatch].scrollIntoView({behavior:"smooth",block:"center"});}
 
-// Jump input via Enter
-const jumpInput=document.getElementById("jumpInput");
-jumpInput.addEventListener("keydown", e=>{ if(e.key==="Enter") jump(); });
-
-function jump(){
-    const val=jumpInput.value.trim();
-    if(val.includes(".")){
-        const el=document.querySelector(`.bubble[data-index='${val}']`);
-        if(!el){ alert("Bubble not found"); return; }
-        el.scrollIntoView({behavior:"smooth", block:"center"}); el.classList.remove("collapsed");
-        el.classList.add("jump-highlight"); setTimeout(()=>el.classList.remove("jump-highlight"),1500);
+    // Swap content
+    const content = div.querySelector(".content");
+    if (view === "json") {
+        content.innerHTML = div.dataset.json;
+    } else if (view === "markdown") {
+        content.innerHTML = div.dataset.md;
+        hljs.highlightAll();
     } else {
-        const r=parseInt(val); if(!r) return;
-        const el=document.querySelector(`.bubble[data-round='${r}']`);
-        if(!el){ alert("Round not found"); return; }
-        el.scrollIntoView({behavior:"smooth", block:"center"}); el.classList.remove("collapsed");
+        content.innerHTML = div.dataset.pre;
     }
 }
 
-// Up/Down buttons scroll to top of round, accounting for toolbar
-let currentRoundIndex=0;
-function jumpRound(dir){
-    if(!rounds.length) return;
+
+/* ==============================================================
+   JSON PRETTY-PRINTER
+   ============================================================== */
+
+/**
+ * Converts a JavaScript value into a syntax-coloured HTML string that
+ * renders as a pretty-printed JSON document.
+ *
+ * Colour classes used (all styled in the .json-view block in CSS):
+ *   .json-key  – object key strings
+ *   .json-str  – string values
+ *   .json-num  – number values
+ *   .json-bool – boolean values
+ *   .json-null – null
+ *
+ * @param {*} value  Any JSON-serialisable value.
+ * @returns {string} An HTML string ready to inject into a container.
+ */
+function buildJsonHTML(value) {
+    const json  = JSON.stringify(value, null, 2);
+    const lines = json.split("\n");
+
+    const coloured = lines.map(line => {
+        // Colour object keys: "key":
+        line = line.replace(
+            /^(\s*)("(?:[^"\\]|\\.)*")(\s*:)/,
+            (_, indent, key, colon) =>
+                indent + '<span class="json-key">' + escapeHTML(key) + '</span>' + colon
+        );
+
+        // Colour string values (after a colon, or standalone in arrays)
+        line = line.replace(
+            /(:\s*)("(?:[^"\\]|\\.)*")(,?)$/,
+            (_, prefix, str, comma) =>
+                prefix + '<span class="json-str">' + escapeHTML(str) + '</span>' + comma
+        );
+        // Standalone string (array element, no leading colon)
+        line = line.replace(
+            /^(\s*)("(?:[^"\\]|\\.)*")(,?)$/,
+            (_, indent, str, comma) =>
+                indent + '<span class="json-str">' + escapeHTML(str) + '</span>' + comma
+        );
+
+        // Colour numbers
+        line = line.replace(
+            /(:\s*)(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(,?)$/,
+            (_, prefix, num, comma) =>
+                prefix + '<span class="json-num">' + num + '</span>' + comma
+        );
+        line = line.replace(
+            /^(\s*)(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(,?)$/,
+            (_, indent, num, comma) =>
+                indent + '<span class="json-num">' + num + '</span>' + comma
+        );
+
+        // Colour booleans
+        line = line.replace(
+            /(:\s*)(true|false)(,?)$/,
+            (_, prefix, bool, comma) =>
+                prefix + '<span class="json-bool">' + bool + '</span>' + comma
+        );
+        line = line.replace(
+            /^(\s*)(true|false)(,?)$/,
+            (_, indent, bool, comma) =>
+                indent + '<span class="json-bool">' + bool + '</span>' + comma
+        );
+
+        // Colour null
+        line = line.replace(
+            /(:\s*)(null)(,?)$/,
+            (_, prefix, n, comma) =>
+                prefix + '<span class="json-null">' + n + '</span>' + comma
+        );
+        line = line.replace(
+            /^(\s*)(null)(,?)$/,
+            (_, indent, n, comma) =>
+                indent + '<span class="json-null">' + n + '</span>' + comma
+        );
+
+        return line;
+    });
+
+    return '<div class="json-view">' + coloured.join("\n") + '</div>';
+}
+
+
+/* ==============================================================
+   TOOLBAR ACTIONS
+   ============================================================== */
+
+/**
+ * Toggles between dark and light mode by adding/removing the
+ * "dark" class on <body>.
+ */
+function toggleDark() {
+    document.body.classList.toggle("dark");
+}
+
+/**
+ * Toggles the global fold state.
+ * When allCollapsed is true every bubble is collapsed (showing only
+ * a short preview); when false all bubbles are expanded.
+ */
+function toggleFoldAll() {
+    allCollapsed = !allCollapsed;
+    document.querySelectorAll(".bubble").forEach(b =>
+        b.classList.toggle("collapsed", allCollapsed)
+    );
+}
+
+
+/* ==============================================================
+   SEARCH
+   ============================================================== */
+
+/** Re-run the search whenever the user types in the search box. */
+document.getElementById("searchBox").addEventListener("input", runSearch);
+
+/**
+ * Scans all bubble content divs for the current search term.
+ * Wraps matches in <mark> elements and advances to the first hit.
+ *
+ * The search operates on whichever HTML variant (Markdown or plain)
+ * is currently visible in each bubble.
+ */
+function runSearch() {
+    const term = document.getElementById("searchBox").value.trim();
+    matches      = [];
+    currentMatch = -1;
+
+    document.querySelectorAll(".bubble").forEach(bubble => {
+        const content  = bubble.querySelector(".content");
+        // Use the same HTML variant that is currently displayed
+        const view = bubble.dataset.view || "text";
+        let html = view === "markdown" ? bubble.dataset.md
+                 : view === "json"     ? bubble.dataset.json
+                 :                       bubble.dataset.pre;
+
+        if (term) {
+            // Escape special regex chars in the user's search term
+            const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const re      = new RegExp(escaped, "gi");
+            html = html.replace(re, m => `<mark>${m}</mark>`);
+        }
+
+        content.innerHTML = html;
+        // Collect all new <mark> nodes for navigation
+        content.querySelectorAll("mark").forEach(m => matches.push(m));
+    });
+
+    // Jump to first match (if any)
+    if (matches.length > 0) nextMatch();
+}
+
+/**
+ * Advances to the next search match and scrolls it into view.
+ */
+function nextMatch() {
+    if (!matches.length) return;
+    clearCurrentMatch();
+    currentMatch = (currentMatch + 1) % matches.length;
+    highlightCurrent();
+}
+
+/**
+ * Moves to the previous search match and scrolls it into view.
+ */
+function prevMatch() {
+    if (!matches.length) return;
+    clearCurrentMatch();
+    currentMatch = (currentMatch - 1 + matches.length) % matches.length;
+    highlightCurrent();
+}
+
+/** Removes the .current-match class from all marks. */
+function clearCurrentMatch() {
+    matches.forEach(m => m.classList.remove("current-match"));
+}
+
+/** Adds .current-match to the active mark and scrolls to it. */
+function highlightCurrent() {
+    matches[currentMatch].classList.add("current-match");
+    matches[currentMatch].scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+
+/* ==============================================================
+   JUMP / NAVIGATION
+   ============================================================== */
+
+/** Allow pressing Enter in the jump field to trigger a jump. */
+document.getElementById("jumpInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") jump();
+});
+
+/**
+ * Jumps to a specific round or bubble based on the jump input value.
+ *
+ * Input format:
+ *   "4"   → scrolls to the first bubble of round 4.
+ *   "4.2" → scrolls directly to bubble 2 of round 4 and expands it.
+ *
+ * A brief red outline (.jump-highlight) is applied to the target
+ * element for 1.5 s to make it easy to spot.
+ */
+function jump() {
+    const val = document.getElementById("jumpInput").value.trim();
+    if (!val) return;
+
+    let target;
+
+    if (val.includes(".")) {
+        // Specific bubble (e.g. "4.2")
+        target = document.querySelector(`.bubble[data-index='${val}']`);
+        if (!target) { alert("Bubble not found: " + val); return; }
+        target.classList.remove("collapsed");
+    } else {
+        // Whole round (e.g. "4")
+        const r = parseInt(val, 10);
+        if (isNaN(r)) return;
+        target = document.querySelector(`.bubble[data-round='${r}']`);
+        if (!target) { alert("Round not found: " + val); return; }
+    }
+
+    scrollToWithToolbarOffset(target);
+    flashJumpHighlight(target);
+}
+
+/**
+ * Navigates to an adjacent round using the ⬆/⬇ buttons.
+ *
+ * @param {number} dir  -1 for previous round, +1 for next round.
+ */
+function jumpRound(dir) {
+    if (!rounds.length) return;
     currentRoundIndex = Math.max(0, Math.min(currentRoundIndex + dir, rounds.length - 1));
-    const el = rounds[currentRoundIndex][0];
-    if(el){
-        const toolbarHeight = document.getElementById("toolbar").offsetHeight;
-        const top = el.getBoundingClientRect().top + window.scrollY - toolbarHeight - 5;
-        window.scrollTo({top: top, behavior: "smooth"});
-        el.classList.remove("collapsed");
+    const target = rounds[currentRoundIndex][0];
+    if (target) {
+        scrollToWithToolbarOffset(target);
+        target.classList.remove("collapsed");
+    }
+}
+
+/**
+ * Smoothly scrolls the page so the target element sits just below
+ * the sticky toolbar.
+ *
+ * @param {HTMLElement} el  The element to scroll to.
+ */
+function scrollToWithToolbarOffset(el) {
+    const toolbarH = document.getElementById("toolbar").offsetHeight;
+    const top = el.getBoundingClientRect().top + window.scrollY - toolbarH - 5;
+    window.scrollTo({ top, behavior: "smooth" });
+}
+
+/**
+ * Temporarily adds a red outline to the given element, then
+ * removes it after 1.5 seconds.
+ *
+ * @param {HTMLElement} el  Element to flash.
+ */
+function flashJumpHighlight(el) {
+    el.classList.add("jump-highlight");
+    setTimeout(() => el.classList.remove("jump-highlight"), 1500);
+}
+
+
+/* ==============================================================
+   PDF EXPORT
+   ============================================================== */
+
+/**
+ * Exports the entire rendered chat as a multi-page PDF document.
+ *
+ * Strategy – chunked rendering to avoid the browser's max-canvas limit:
+ *  1. Expand all bubbles so no content is clipped.
+ *  2. Measure the full scrollable height of the #chat element.
+ *  3. Render the content one A4-page-sized strip at a time by
+ *     scrolling an off-screen clone into view and capturing it with
+ *     html2canvas. Each strip becomes exactly one PDF page, so the
+ *     canvas is never larger than one viewport-height and the
+ *     "Canvas exceeds max size" error cannot occur.
+ *  4. Restore the original collapsed/expanded state of every bubble.
+ *  5. Trigger a download of the finished PDF.
+ *
+ * A full-screen loading overlay with a progress counter is shown
+ * while the export runs.
+ */
+async function exportPDF() {
+    const chatEl = document.getElementById("chat");
+    if (!chatEl || chatEl.children.length === 0) {
+        alert("No chat loaded. Please open a JSON file first.");
+        return;
+    }
+
+    // ---- Show loading overlay ----
+    const overlay    = document.getElementById("pdf-overlay");
+    const statusText = document.getElementById("pdf-status");
+    overlay.classList.add("visible");
+    statusText.textContent = "Preparing export…";
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    // ---- Step 1: Expand all bubbles; hide in-bubble buttons ----
+    const bubbles      = document.querySelectorAll(".bubble");
+    const wasCollapsed = [];
+    bubbles.forEach(b => {
+        wasCollapsed.push(b.classList.contains("collapsed"));
+        b.classList.remove("collapsed");
+    });
+
+    // Hide the view-switcher tabs during capture so they don't appear in the PDF
+    const switcherEls = document.querySelectorAll(".view-switcher");
+    switcherEls.forEach(s => { s.style.visibility = "hidden"; });
+
+    // Flush layout after DOM changes
+    await new Promise(r => setTimeout(r, 120));
+
+    try {
+        const { jsPDF } = window.jspdf;
+        const isDark    = document.body.classList.contains("dark");
+        const bgColor   = isDark ? "#1e1e1e" : "#f5f5f5";
+
+        // ---- Page geometry ----
+        // A4 in jsPDF points (72 dpi): 595.28 × 841.89 pt
+        const PDF_W_PT  = 595.28;
+        const PDF_H_PT  = 841.89;
+        // Margin in PDF points (approx 15 mm)
+        const MARGIN_PT = 42;
+        // Usable content area per page
+        const CONTENT_W_PT = PDF_W_PT  - 2 * MARGIN_PT;
+        const CONTENT_H_PT = PDF_H_PT  - 2 * MARGIN_PT;
+
+        // chatEl's bounding rect relative to the document
+        const chatRect  = chatEl.getBoundingClientRect();
+        const chatTopAbs = chatRect.top + window.scrollY; // absolute Y of #chat top
+
+        const captureW  = chatEl.scrollWidth;
+        const totalH    = chatEl.scrollHeight;
+
+        // scaleFactor: how many PDF content-width points per CSS pixel
+        const scaleFactor = CONTENT_W_PT / captureW;
+
+        // One page's usable content height, expressed in CSS pixels
+        const pageH_css = CONTENT_H_PT / scaleFactor;
+
+        // ---- Step 2: Compute smart page-break offsets ----
+        //
+        // bubble.getBoundingClientRect() gives position relative to the
+        // viewport; adding window.scrollY and subtracting chatTopAbs
+        // converts it to a Y offset relative to the top of #chat —
+        // which is exactly the coordinate space html2canvas uses.
+        //
+        const pageBreaks = [0]; // CSS-px offsets within #chat where pages start
+
+        while (true) {
+            const pageStart = pageBreaks[pageBreaks.length - 1];
+            const pageEnd   = pageStart + pageH_css;
+            if (pageEnd >= totalH) break;
+
+            let breakY = pageEnd;
+
+            for (const bubble of bubbles) {
+                const rect   = bubble.getBoundingClientRect();
+                const bTop   = rect.top  + window.scrollY - chatTopAbs;
+                const bBot   = rect.bottom + window.scrollY - chatTopAbs;
+                const bH     = rect.height;
+
+                if (bTop < pageEnd && bBot > pageEnd) {
+                    if (bH <= pageH_css) {
+                        // Bubble fits on one page → push break to just before it
+                        breakY = bTop;
+                    }
+                    // else: taller than a page, unavoidable split
+                    break;
+                }
+            }
+
+            if (breakY <= pageStart) breakY = pageEnd; // safety: always advance
+
+            pageBreaks.push(breakY);
+        }
+
+        // ---- Step 3: Render one strip per page ----
+        const totalPages = pageBreaks.length;
+        const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true });
+
+        for (let p = 0; p < totalPages; p++) {
+            statusText.textContent = `Rendering page ${p + 1} of ${totalPages}…`;
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+            const offsetY = pageBreaks[p];
+            const nextY   = (p + 1 < totalPages) ? pageBreaks[p + 1] : totalH;
+            const stripH  = nextY - offsetY;
+
+            const canvas = await html2canvas(chatEl, {
+                scale:           1,
+                useCORS:         true,
+                logging:         false,
+                backgroundColor: bgColor,
+                x:               0,
+                y:               offsetY,
+                width:           captureW,
+                height:          stripH,
+                windowWidth:     document.documentElement.scrollWidth,
+                windowHeight:    document.documentElement.scrollHeight,
+                scrollX:         0,
+                scrollY:         -window.scrollY,
+            });
+
+            // Height of this strip in PDF content-area points
+            const renderedH_pt = stripH * scaleFactor;
+
+            if (p > 0) pdf.addPage();
+
+            // Place the image inside the margins on every page
+            pdf.addImage(
+                canvas.toDataURL("image/jpeg", 0.92), "JPEG",
+                MARGIN_PT,           // x: left margin
+                MARGIN_PT,           // y: top margin
+                CONTENT_W_PT,        // width: content area width
+                renderedH_pt         // height: proportional to strip
+            );
+        }
+
+        // ---- Step 4: Download ----
+        pdf.save("chat_export.pdf");
+
+    } catch (err) {
+        console.error("PDF export failed:", err);
+        alert("PDF export failed: " + err.message);
+    } finally {
+        // ---- Step 5: Restore bubble state and switcher visibility ----
+        bubbles.forEach((b, i) => {
+            if (wasCollapsed[i]) b.classList.add("collapsed");
+        });
+        switcherEls.forEach(s => { s.style.visibility = ""; });
+
+        overlay.classList.remove("visible");
     }
 }
 </script>
