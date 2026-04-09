@@ -124,13 +124,6 @@ built so far.  The paper proves this local greediness achieves a global
 optimum --- no algorithm exploiting only associativity can do fewer
 total `⊕` operations overall.
 
-[TODO: Provide intuition and describe core ideas: sliding window and
-reusing partial aggregations of subsequences in previous processed
-windows.  These partial aggregations are stored in trees that are
-updated whenever moving the window to the right.  Intuition is best
-provided through a picture illustrating the sliding window over the
-stream elements.]
-
 
 ## Implementations
 
