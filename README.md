@@ -98,6 +98,32 @@ between overlapping windows.
 
 ### Algorithmic Details
 
+Each window's aggregation is represented as a binary tree, where each
+internal node stores a partial result (the `⊕`-combination of some
+contiguous subsequence).  When the window slides to the next position,
+the algorithm does two things:
+
+1. Identifies reusable subtrees from the previous window's tree ---
+   contiguous sub-aggregations whose range falls within the new
+   window.  These are extracted via the reusables function, which walks
+   the tree to find the maximal such subtrees.
+
+2. Creates singleton nodes for any newly entered elements (those not
+   covered by the old tree), via singletons.
+
+It then folds these two lists together (new singletons and reusable
+subtrees, ordered right-to-left).  The combination assembles the new
+window's tree.  Crucially, when a subtree is consumed as the left
+child of a new node, its stored value is discharged so it is not
+redundantly reused again later.
+
+
+The algorithm is greedy in a precise sense: at each step it minimizes
+the number of `⊕` applications for the current window given the tree
+built so far.  The paper proves this local greediness achieves a global
+optimum --- no algorithm exploiting only associativity can do fewer
+total `⊕` operations overall.
+
 [TODO: Provide intuition and describe core ideas: sliding window and
 reusing partial aggregations of subsequences in previous processed
 windows.  These partial aggregations are stored in trees that are
