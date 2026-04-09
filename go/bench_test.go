@@ -2,7 +2,7 @@ package sliding_test
 
 import (
     "fmt"
-    "math/rand"
+    "math/rand/v2"
     "testing"
     "github.com/flxch/sliding_window/go/sliding"
 )
@@ -41,9 +41,9 @@ var f int
 func BenchmarkOp(b *testing.B) {
     b.StopTimer()
     b.ReportAllocs()
-    op := func(x, y int) int { f = fib(rand.Intn(delay)); return x + y }
+    op := func(x, y int) int { f = fib(rand.IntN(delay)); return x + y }
     for i := 0; i < b.N; i++ {
-        x, y := int(rand.Int31()), int(rand.Int31())
+        x, y := int(rand.Int32()), int(rand.Int32())
         b.StartTimer()
         f = op(x, y)
         b.StopTimer()
@@ -55,7 +55,7 @@ func BenchmarkOp(b *testing.B) {
 
 func BenchmarkSlidingWindow(b *testing.B) {
     b.Logf("stream length: %d, window size: %d", streamlen, winsize)
-    op := func(x, y int) int { f = fib(rand.Intn(delay)); return x + y }
+    op := func(x, y int) int { f = fib(rand.IntN(delay)); return x + y }
     for _, winnum := range winnums {
         b.Run(fmt.Sprintf("#win=%d", winnum), func(b *testing.B) {
             b.StopTimer()

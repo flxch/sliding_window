@@ -2,7 +2,7 @@ package sliding_test
 
 import (
     "fmt"
-    "math/rand"
+    "math/rand/v2"
     "slices"
     "testing"
     "github.com/flxch/sliding_window/go/sliding"
@@ -177,7 +177,7 @@ func aggregate(op sliding.Op[int], elems []int, ws []sliding.Window) []int {
 func randomElems(n int) []int {
     elems := make([]int, n)
     for i := 0; i < len(elems); i++ {
-        elems[i] = int(rand.Int31())
+        elems[i] = int(rand.Int32())
     }
     return elems
 }
@@ -186,15 +186,15 @@ func randomElems(n int) []int {
 func randomWindows(n, m, t int) []sliding.Window {
     froms := make([]int, m + t)
     for i := 0; i < len(froms); i++ {
-        froms[i] = rand.Intn(n)
+        froms[i] = rand.IntN(n)
     }
     slices.Sort(froms)
 
     ws := make([]sliding.Window, m + t)
-    mr := froms[0] + rand.Intn(t)
+    mr := froms[0] + rand.IntN(t)
     for i := 0; i < len(ws); i++ {
         if i > 0 {
-            mr = max(froms[i] + rand.Intn(t), ws[i-1].Right)
+            mr = max(froms[i] + rand.IntN(t), ws[i-1].Right)
         }
         ws[i] = sliding.Window{froms[i], min(n, mr)}
     }
