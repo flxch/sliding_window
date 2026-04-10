@@ -174,6 +174,25 @@ body.dark .bubble.human .index    { background: rgba(0, 150, 255, 0.3); }
 body.dark .bubble.assistant .index{ background: rgba(0, 200, 0, 0.3); }
 
 /* ============================================================
+   CONTENT TYPE LABEL  (shown when b.raw.type exists)
+   Sits in the header row, between the index badge and the
+   view-switcher tabs.  Horizontally centred in the gap.
+   ============================================================ */
+.type-label {
+    position: absolute;
+    top: 6px;
+    font-size: 10px;
+    color: #888;
+    font-style: italic;
+    pointer-events: none;      /* don't interfere with bubble clicks */
+    white-space: nowrap;
+}
+
+/* Centre it between badge (right/left edge) and switcher (left/right edge) */
+.bubble.human     .type-label { left: 50%; transform: translateX(-50%); }
+.bubble.assistant .type-label { left: 50%; transform: translateX(-50%); }
+
+/* ============================================================
    FILENAME LABEL (shown for tool_use bubbles with a path)
    ============================================================ */
 .filename {
@@ -733,6 +752,16 @@ function renderChat(data) {
             idx.innerText  = bubbleId;
             div.appendChild(idx);
 
+            // ---- Content type label ----
+            // If the underlying JSON object has a string field "type",
+            // display it in small gray italic text centred in the header row.
+            if (typeof b.raw?.type === "string" && b.raw.type.trim() !== "") {
+                const typeLabel = document.createElement("div");
+                typeLabel.className = "type-label";
+                typeLabel.innerText = b.raw.type;
+                div.appendChild(typeLabel);
+            }
+
             // ---- Three-way view switcher: JSON | Markdown | Text ----
             //
             // The switcher sits in the top bar of the bubble (same row as the
@@ -750,7 +779,9 @@ function renderChat(data) {
             switcher.className = "view-switcher";
 
             // Determine which view to show by default
-            const defaultView = likelyMd ? "markdown" : "text";
+            // Force markdown view when the content type is explicitly "text"
+            // (i.e. b.raw.type === "text"), or when the heuristic says likely MD.
+            const defaultView = (b.raw?.type === "text" || likelyMd) ? "markdown" : "text";
             div.dataset.view  = defaultView;
 
             const tabDefs = [
@@ -787,7 +818,7 @@ function renderChat(data) {
             const content = document.createElement("div");
             content.className = "content";
             // Initial render matches the default view tab
-            content.innerHTML = likelyMd ? mdHTML : plainHTML;
+            content.innerHTML = defaultView === "markdown" ? mdHTML : plainHTML;
             div.appendChild(content);
 
             // Clicking the bubble (outside buttons) toggles collapsed state
