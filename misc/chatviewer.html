@@ -122,6 +122,9 @@ body.dark {
     transition: max-height 0.2s ease;
 }
 
+/* Narrower bubbles for tool_use and tool_result */
+.bubble.tool-call { max-width: 45%; }
+
 /* Human (user) bubbles: left-aligned, blue tint */
 .bubble.human {
     background: #d0e6ff;
@@ -772,7 +775,8 @@ function renderChat(data) {
 
             // --- Build bubble element ---
             const div = document.createElement("div");
-            div.className  = "bubble collapsed " + msg.sender;
+            const isToolCall = (c_type => c_type === "tool_use" || c_type === "tool_result")(b.raw?.type);
+            div.className  = "bubble collapsed " + msg.sender + (isToolCall ? " tool-call" : "");
             div.dataset.round = round;
             div.dataset.index = bubbleId;
 
