@@ -624,17 +624,47 @@ function extractBubbles(msg) {
                 // Plain text message part
                 text = c.text || "";
 
-            } else if (c.type === "tool_use") {
-                // Tool invocation – display the generated file text
-                text     = c.input?.file_text || "";
-                // Extract just the filename from the full path
-                filename = c.input?.path
-                    ? c.input.path.split("/").pop()
-                    : null;
+            } else if (c.type === "tool_use" || c.type === "tool_result") {
+                // Check for display_content first: if present and well-formed,
+                // use its text field (always rendered as Markdown).
+                const dc = c.display_content;
+                if (dc && typeof dc.type === "string" && typeof dc.text === "string") {
+                    text = dc.text;
+                    // isPlain stays false -> defaultView logic will render as MD
+                } else if (c.type === "tool_use") {
+                    // Fallback for tool_use: prefer file_text, then message
+                    text     = c.input?.file_text || "";
+                    filename = c.input?.path
+                        ? c.input.path.split("/").pop()
+                        : null;
+                    // If file_text is absent, use the message field (plain text)
+                    if (!text && typeof c.message === "string" && c.message) {
+                        text    = c.message;
+                        isPlain = true;
+                    }
+                } else {
+                    // tool_result without display_content.
+                    // Priority: c.message → first text item in c.content[] → placeholder
+                    if (typeof c.message === "string" && c.message) {
+                        text = c.message;
+                    } else if (Array.isArray(c.content)) {
+                        // tool_result often stores text in content[].text
+                        const textItem = c.content.find(
+                            item => item.type === "text" && typeof item.text === "string"
+                        );
+                        text = textItem ? textItem.text : "no text content (" + c.type + ")";
+                    } else {
+                        text = "no text content (" + c.type + ")";
+                    }
+                    isPlain = true;
+                }
 
             } else {
-                // Unknown content type: show a placeholder
-                text    = "no text content (" + c.type + ")";
+                // Unknown content type:
+                // use c.message if available, otherwise a placeholder
+                text    = (typeof c.message === "string" && c.message)
+                    ? c.message
+                    : "no text content (" + c.type + ")";
                 isPlain = true;
             }
 
@@ -720,17 +750,24 @@ function renderChat(data) {
             // HTML for the markdown-rendered view
             const mdHTML = marked.parse(b.text || "");
 
-            // HTML for the plain / raw view
+            // HTML for the plain / raw view.
+            // highlight.js auto-detects the language and applies syntax
+            // colouring; the result is wrapped in a <pre><code> block so
+            // existing code-block CSS (dark background, monospace font)
+            // applies automatically.
+            const rawText = b.text || "";
+            const hlResult = rawText.trim().length > 0
+                ? hljs.highlightAuto(rawText)
+                : null;
+            const highlightedHTML = hlResult
+                ? '<pre><code class="hljs">' + hlResult.value + '</code></pre>'
+                : '<pre></pre>';
+
             let plainHTML;
             if (b.isPlain) {
-                // Attachment plain text: wrap in monospaced <pre>-like div
-                plainHTML =
-                    '<div class="plain-text-content">' +
-                    escapeHTML(b.text || "") +
-                    '</div>';
+                plainHTML = highlightedHTML;
             } else {
-                // Regular message: wrap in a <pre> with escaped content
-                plainHTML = "<pre>" + escapeHTML(b.text || "") + "</pre>";
+                plainHTML = highlightedHTML;
             }
 
             // --- Build bubble element ---
@@ -779,9 +816,17 @@ function renderChat(data) {
             switcher.className = "view-switcher";
 
             // Determine which view to show by default
-            // Force markdown view when the content type is explicitly "text"
-            // (i.e. b.raw.type === "text"), or when the heuristic says likely MD.
-            const defaultView = (b.raw?.type === "text" || likelyMd) ? "markdown" : "text";
+            // Force markdown view when:
+            //   - the content type is explicitly "text"
+            //   - the content has a well-formed display_content object
+            //     (tool_use / tool_result with display_content.type + .text)
+            //   - the markdown heuristic says the text looks like Markdown
+            const hasDisplayContent = (() => {
+                const dc = b.raw?.display_content;
+                return dc && typeof dc.type === "string" && typeof dc.text === "string";
+            })();
+            const defaultView = (b.raw?.type === "text" || hasDisplayContent || likelyMd)
+                ? "markdown" : "text";
             div.dataset.view  = defaultView;
 
             const tabDefs = [
