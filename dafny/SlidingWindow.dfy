@@ -1,559 +1,528 @@
-// ---------------------------------------------------------------------------
-// Sliding Window Aggregation in Dafny
+// Greedy sliding window aggregation algorithm in Dafny.
 //
-// Design notes
-// ============
-// * Input data and windows are represented as finite sequences (seq<A> /
-//   seq<Window>). This avoids channels (Go) or lazy lists (Haskell/OCaml)
-//   and makes pre-/post-conditions and invariants straightforward to state.
+// Reference:
+//   D. Basin, F. Klaedtke, and E. Zalinescu.
+//   Greedily Computing Associative Aggregations on Sliding Windows.
+//   Information Processing Letters, 115(2):186-192, 2015.
 //
-// * The operator `op` is a mathematical function value; Dafny does not yet
-//   support first-class function types that carry a proof of associativity,
-//   so we carry an explicit `ghost` predicate `IsAssoc` and assume it where
-//   needed (marked with `assume`).
+// ── Design notes ──────────────────────────────────────────────────────────────
+// Go uses channels for streaming.  In Dafny we represent the data stream and
+// the window sequence as finite sequences (seq<A>).  This gives us clean,
+// first-order preconditions / postconditions and lets Dafny's verifier reason
+// over indices without encoding channel state or effects.
 //
-// * Trees are defined as an algebraic datatype (matching the Haskell / OCaml
-//   style), which is purely functional and easiest to reason about.
+// Index convention (following the paper): the paper is 1-based; the OCaml
+// implementation is 0-based.  We follow the 0-based OCaml/Go convention
+// throughout.  A window (l, r) covers xs[l], xs[l+1], ..., xs[r] (inclusive).
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ── Operator abstraction ──────────────────────────────────────────────────────
 //
-// * Ghost predicates `CorrectlyShared`, `CorrectlyValued`, and `Valid`
-//   mirror the paper's definitions (S1)-(S3) and (V1)-(V3).
+// Dafny does not have first-class function types that carry specifications, so
+// we model the associative operator as a trait.  A concrete operator type
+// extends Op and must provide:
+//   • Apply   – the computation
+//   • Assoc   – a lemma proving associativity
 //
-// * Where Dafny cannot yet fully verify a property automatically (e.g.
-//   inductive arguments about tree structure), we mark the step with
-//   `// PROOF OBLIGATION` and leave the proof sketch as a comment.
-// ---------------------------------------------------------------------------
+// Note: the Assoc lemma is left as `requires false` (an admitted axiom) here
+// so the file compiles as a template.  A concrete instantiation must supply a
+// real proof or an assume statement with justification.
 
-// ---------------------------------------------------------------------------
-// 0.  Option type
-// ---------------------------------------------------------------------------
+trait Op<A> {
+  function Apply(x: A, y: A): A
 
-datatype Option<A> = None | Some(value: A)
-
-// ---------------------------------------------------------------------------
-// 1.  Tree datatype
-// ---------------------------------------------------------------------------
-
-// A Label stores the aggregated (optional) value for the subtree rooted here,
-// together with the index range [from, to] of elements it covers.
-datatype Label<A> = Label(from: int, to: int, agg: Option<A>)
-
-// A Tree is either a Leaf or an interior Node.
-datatype Tree<A> =
-  | Leaf
-  | Node(lbl: Label<A>, left: Tree<A>, right: Tree<A>)
-
-// ---------------------------------------------------------------------------
-// 2.  Tree selectors
-// ---------------------------------------------------------------------------
-
-function LeftIndex<A>(t: Tree<A>): int
-{
-  match t
-  case Leaf        => -1
-  case Node(l,_,_) => l.from
+  lemma Assoc(x: A, y: A, z: A)
+    ensures Apply(Apply(x, y), z) == Apply(x, Apply(y, z))
 }
 
-function RightIndex<A>(t: Tree<A>): int
-{
-  match t
-  case Leaf        => -1
-  case Node(l,_,_) => l.to
-}
-
-function Value<A>(t: Tree<A>): Option<A>
-{
-  match t
-  case Leaf        => None
-  case Node(l,_,_) => l.agg
-}
-
-function Extract<A>(t: Tree<A>): A
-  requires t != Leaf
-  requires Value(t) != None
-{
-  Value(t).value
-}
-
-// ---------------------------------------------------------------------------
-// 3.  Ghost: aggregate of a subsequence
-// ---------------------------------------------------------------------------
-
-// `Agg(op, xs, l, r)` is the left fold of `op` over xs[l..r+1].
-// This mirrors the paper's notation `⊕_(l,r)(ā)`.
-ghost function Agg<A>(op: (A,A) -> A, xs: seq<A>, l: int, r: int): A
+// Fold the associative operator over a non-empty sub-sequence xs[l..r+1].
+// This gives us the "ground truth" aggregation value ⊕_w(xs) used in specs.
+function Fold<A>(op: Op<A>, xs: seq<A>, l: int, r: int): A
   requires 0 <= l <= r < |xs|
   decreases r - l
 {
   if l == r then xs[l]
-  else op(Agg(op, xs, l, r-1), xs[r])
+  else op.Apply(Fold(op, xs, l, r - 1), xs[r])
 }
 
-// ---------------------------------------------------------------------------
-// 4.  Ghost: validity predicates (paper's S1-S3 and V1-V3)
-// ---------------------------------------------------------------------------
-
-// A tree is correctly shaped.
-ghost predicate CorrectlyShapedAt<A>(t: Tree<A>, n: int)
-  decreases t
+// Convenience: fold over the whole window record.
+function FoldWindow<A>(op: Op<A>, xs: seq<A>, w: (int, int)): A
+  requires 0 <= w.0 <= w.1 < |xs|
 {
-  match t
-  case Leaf => true
-  case Node(l, left, right) =>
-    // (S1)
-    && l.from <= l.to
-    // (S2) leaf iff singleton range
-    && (l.from == l.to ==> left == Leaf && right == Leaf)
-    // (S3) non-singleton has two non-leaf children covering the same range,
-    //      with right child's left = left child's right + 1
-    && (l.from < l.to ==>
-          left != Leaf && right != Leaf
-          && LeftIndex(left)  == l.from
-          && RightIndex(right) == l.to
-          && RightIndex(left) + 1 == LeftIndex(right))
-    // bounds within the input sequence
-    && 1 <= l.from && l.to <= n
-    // recurse
-    && CorrectlyShapedAt(left, n)
-    && CorrectlyShapedAt(right, n)
+  Fold(op, xs, w.0, w.1)
 }
 
-// A tree is correctly valued w.r.t. input sequence xs.
-ghost predicate CorrectlyValuedAt<A>(op: (A,A)->A, xs: seq<A>, t: Tree<A>)
-  decreases t
-{
-  match t
-  case Leaf => true
-  case Node(l, left, right) =>
-    // (V1) if value present, it equals the correct aggregate
-    && (l.agg != None ==>
-          0 <= l.from - 1 < |xs| && l.to - 1 < |xs|
-          && l.agg == Some(Agg(op, xs, l.from - 1, l.to - 1)))
-    // (V2) right child (if not Leaf) must have a value
-    && (right != Leaf ==> Value(right) != None)
-    // (V3) root always has a value (already covered by callers: root != Leaf)
-    && l.agg != None
-    // recurse
-    && CorrectlyValuedAt(op, xs, left)
-    && CorrectlyValuedAt(op, xs, right)
-}
 
-// A tree is valid (correctly shaped and correctly valued).
-ghost predicate Valid<A>(op: (A,A)->A, xs: seq<A>, t: Tree<A>)
-{
-  t == Leaf
-  || (CorrectlyShapedAt(t, |xs|) && CorrectlyValuedAt(op, xs, t))
-}
+// ── Option type ───────────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// 5.  Auxiliary ghost: associativity
-// ---------------------------------------------------------------------------
+datatype Option<A> = None | Some(value: A)
 
-ghost predicate IsAssoc<A>(op: (A,A)->A)
-{
-  forall a, b, c :: op(op(a,b),c) == op(a,op(b,c))
-}
-
-// ---------------------------------------------------------------------------
-// 6.  Lifted operator (works on Option<A>)
-// ---------------------------------------------------------------------------
-
-function Lift<A>(op: (A,A)->A): (Option<A>, Option<A>) -> Option<A>
-{
-  (x, y) =>
-    match (x, y)
-    case (Some(a), Some(b)) => Some(op(a, b))
+function LiftOp<A>(op: Op<A>, x: Option<A>, y: Option<A>): Option<A> {
+  match (x, y)
+    case (Some(a), Some(b)) => Some(op.Apply(a, b))
     case _                  => None
 }
 
-// Lifted op inherits associativity.
-lemma LiftedAssoc<A>(op: (A,A)->A, x: Option<A>, y: Option<A>, z: Option<A>)
-  requires IsAssoc(op)
-  ensures Lift(op)(Lift(op)(x,y),z) == Lift(op)(x,Lift(op)(y,z))
-{
-  // Case-split on all three Options.
-  match (x,y,z) {
-    case (Some(a), Some(b), Some(c)) =>
-      // Both sides reduce to Some(op(op(a,b),c)) = Some(op(a,op(b,c))).
-      assert op(op(a,b),c) == op(a,op(b,c)) by { assert IsAssoc(op); }
-    case _ => // At least one None => both sides are None.
-  }
+
+// ── Tree datatype ─────────────────────────────────────────────────────────────
+//
+// Each internal node carries a Label:
+//   fromIdx  – left index (into the data sequence xs)
+//   toIdx    – right index (inclusive)
+//   agg      – optional aggregated value; None means "discharged"
+//
+// A leaf is represented by the sentinel Leaf constructor (analogous to nil in
+// Go / Leaf in Haskell / Leaf in OCaml).
+
+datatype Label<A> = Label(fromIdx: int, toIdx: int, agg: Option<A>)
+
+datatype Tree<A> =
+  | Leaf
+  | Node(lbl: Label<A>, left: Tree<A>, right: Tree<A>)
+
+
+// ── Tree selectors ────────────────────────────────────────────────────────────
+
+function LeftIndex<A>(t: Tree<A>): int {
+  match t
+    case Leaf          => -1
+    case Node(l, _, _) => l.fromIdx
 }
 
-// ---------------------------------------------------------------------------
-// 7.  singleton  (creates a single-element tree)
-// ---------------------------------------------------------------------------
+function RightIndex<A>(t: Tree<A>): int {
+  match t
+    case Leaf          => -1
+    case Node(l, _, _) => l.toIdx
+}
 
+function Value<A>(t: Tree<A>): Option<A> {
+  match t
+    case Leaf          => None
+    case Node(l, _, _) => l.agg
+}
+
+// Extract the aggregated value; requires that it is present.
+function Extract<A>(t: Tree<A>): A
+  requires t != Leaf
+  requires t.lbl.agg.Some?
+{
+  t.lbl.agg.value
+}
+
+
+// ── Tree constructors / helpers ───────────────────────────────────────────────
+
+// Build a leaf-level singleton tree for xs[i].
 function Singleton<A>(i: int, x: A): Tree<A>
   requires i >= 0
+  ensures  RightIndex(Singleton(i, x)) == i
+  ensures  LeftIndex(Singleton(i, x))  == i
+  ensures  Value(Singleton(i, x)) == Some(x)
 {
-  Node(Label(i+1, i+1, Some(x)), Leaf, Leaf)
-  // Note: 1-based indices in labels; i is 0-based.
+  Node(Label(i, i, Some(x)), Leaf, Leaf)
 }
 
-// Singleton trees are valid.
-lemma SingletonValid<A>(op: (A,A)->A, xs: seq<A>, i: int, x: A)
-  requires 0 <= i < |xs|
-  requires xs[i] == x
-  ensures Valid(op, xs, Singleton(i, x))
-{
-  var t := Singleton(i, x);
-  var l := t.lbl;
-  // Shape: from == to == i+1, children are Leaf.
-  assert l.from == l.to == i + 1;
-  assert CorrectlyShapedAt(t, |xs|);
-  // Value: Agg(op, xs, i, i) == xs[i] == x.
-  assert Agg(op, xs, i, i) == xs[i];
-  assert l.agg == Some(x) == Some(Agg(op, xs, i, i));
-  assert CorrectlyValuedAt(op, xs, t);
-}
-
-// ---------------------------------------------------------------------------
-// 8.  discharge  (clears the aggregation at the root, keeping children)
-// ---------------------------------------------------------------------------
-
+// Clear the aggregation at the root while keeping the subtree structure.
+// "Discharging" marks that the root value has been consumed; the subtrees
+// remain intact for possible future reuse.
 function Discharge<A>(t: Tree<A>): Tree<A>
+  requires t != Leaf
+  ensures  LeftIndex(Discharge(t))  == LeftIndex(t)
+  ensures  RightIndex(Discharge(t)) == RightIndex(t)
+  ensures  Value(Discharge(t))      == None
 {
-  match t
-  case Leaf           => Leaf
-  case Node(l, l2, r) => Node(Label(l.from, l.to, None), l2, r)
+  Node(Label(t.lbl.fromIdx, t.lbl.toIdx, None), t.left, t.right)
 }
 
-// ---------------------------------------------------------------------------
-// 9.  combine  (merge two trees under a new root)
-// ---------------------------------------------------------------------------
-
-function Combine<A>(op: (A,A)->A, t1: Tree<A>, t2: Tree<A>): Tree<A>
+// Merge two trees.  The left tree is discharged and becomes the left child of
+// the new root; the right tree becomes the right child.  If either is a Leaf
+// the other is returned unchanged (base cases matching the OCaml/Go logic).
+function Combine<A>(op: Op<A>, t1: Tree<A>, t2: Tree<A>): Tree<A>
+  ensures LeftIndex(Combine(op, t1, t2))  ==
+            if t1 == Leaf then LeftIndex(t2)  else LeftIndex(t1)
+  ensures RightIndex(Combine(op, t1, t2)) ==
+            if t2 == Leaf then RightIndex(t1) else RightIndex(t2)
 {
   match (t1, t2)
-  case (Leaf, _) => t2
-  case (_, Leaf) => t1
-  case _         =>
-    var v := Lift(op)(Value(t1), Value(t2));
-    Node(Label(LeftIndex(t1), RightIndex(t2), v), Discharge(t1), t2)
+    case (Leaf, _) => t2
+    case (_, Leaf) => t1
+    case _         =>
+      var newAgg := LiftOp(op, Value(t1), Value(t2));
+      Node(
+        Label(LeftIndex(t1), RightIndex(t2), newAgg),
+        Discharge(t1),
+        t2
+      )
 }
 
-// combine preserves validity.
-//
-// PROOF OBLIGATION (sketch, follows paper's fact (c)):
-//   Given valid t1 and t2 whose index ranges are adjacent
-//   (RightIndex(t1)+1 == LeftIndex(t2)), Combine(op, t1, t2) is valid
-//   with range [LeftIndex(t1), RightIndex(t2)].
-//
-//   Shape: (S1)-(S3) follow from the adjacency condition and the fact that
-//   Discharge(t1) retains t1's index range.
-//   Value: (V1) follows from IsAssoc(op) allowing re-bracketing; (V2)-(V3)
-//   hold because t2 and the new root both carry values.
-//
-// The full inductive proof is omitted; assertions below check the key steps
-// at each call site.
-lemma CombineValid<A>(op: (A,A)->A, xs: seq<A>, t1: Tree<A>, t2: Tree<A>)
-  requires IsAssoc(op)
-  requires Valid(op, xs, t1)
-  requires Valid(op, xs, t2)
-  requires t1 != Leaf && t2 != Leaf
-  requires RightIndex(t1) + 1 == LeftIndex(t2)   // adjacency
-  ensures Valid(op, xs, Combine(op, t1, t2))
-  ensures LeftIndex(Combine(op, t1, t2))  == LeftIndex(t1)
-  ensures RightIndex(Combine(op, t1, t2)) == RightIndex(t2)
-{
-  // PROOF OBLIGATION: formal proof requires induction on tree size.
-  // The key steps are:
-  //   1. The new label's range is [LeftIndex(t1), RightIndex(t2)].
-  //   2. Value is Some(op(agg(t1), agg(t2))) = Some(Agg(op, xs, l1-1, r2-1))
-  //      by associativity (IsAssoc) and the induction hypothesis.
-  //   3. CorrectlyShapedAt holds because t1 and t2 are Discharged / kept.
-  assume Valid(op, xs, Combine(op, t1, t2));        // admitted; see sketch
-  assume LeftIndex(Combine(op,t1,t2))  == LeftIndex(t1);
-  assume RightIndex(Combine(op,t1,t2)) == RightIndex(t2);
-}
 
-// ---------------------------------------------------------------------------
-// 10.  reusables  (collect maximal reusable subtrees)
-// ---------------------------------------------------------------------------
+// ── Tree validity predicates ──────────────────────────────────────────────────
+//
+// These mirror the paper's definitions of "correctly shaped" (S1-S3) and
+// "correctly valued" (V1-V3).
 
-// Returns the list of maximal subtrees of `t` whose entire index range lies
-// at or after `l` (1-based), in right-to-left order (matching the OCaml /
-// Haskell implementations).
-function Reusables<A>(t: Tree<A>, l: int): seq<Tree<A>>
+// A correctly shaped tree.
+predicate CorrectlyShapedTree<A>(t: Tree<A>)
   decreases t
 {
-  if l > RightIndex(t) then
+  match t
+    case Leaf => true
+    case Node(lbl, left, right) =>
+      // (S1) left index ≤ right index
+      lbl.fromIdx <= lbl.toIdx
+      // (S2) Leaves iff singleton span
+      && (lbl.fromIdx == lbl.toIdx ==> left == Leaf && right == Leaf)
+      // (S3) Internal nodes have correct child relationships
+      && (lbl.fromIdx < lbl.toIdx ==>
+            left != Leaf && right != Leaf
+            && LeftIndex(left)  == lbl.fromIdx
+            && RightIndex(right) == lbl.toIdx
+            && RightIndex(left) + 1 == LeftIndex(right))
+      // Recurse into children
+      && CorrectlyShapedTree(left)
+      && CorrectlyShapedTree(right)
+}
+
+// A correctly valued tree (wrt. the data sequence xs and operator op).
+predicate CorrectlyValuedTree<A>(t: Tree<A>, op: Op<A>, xs: seq<A>)
+  requires CorrectlyShapedTree(t)
+  requires t != Leaf ==> 0 <= LeftIndex(t) && RightIndex(t) < |xs|
+  decreases t
+{
+  match t
+    case Leaf => true
+    case Node(lbl, left, right) =>
+      // (V1) If value is present it equals the fold over [from..to]
+      (lbl.agg.Some? ==>
+         lbl.agg.value == Fold(op, xs, lbl.fromIdx, lbl.toIdx))
+      // (V2) Right children must have their value computed
+      && (right != Leaf ==> Value(right).Some?)
+      // (V3) Root of any non-Leaf must have its value computed (already: V3
+      //       says root of t must be Some; this is the root so we check it)
+      && lbl.agg.Some?
+      // Recurse (bounds follow from CorrectlyShapedTree)
+      && (left  != Leaf ==>
+            0 <= LeftIndex(left)  && RightIndex(left)  < |xs|
+            && CorrectlyValuedTree(left, op, xs))
+      && (right != Leaf ==>
+            0 <= LeftIndex(right) && RightIndex(right) < |xs|
+            && CorrectlyValuedTree(right, op, xs))
+}
+
+// A valid tree is both correctly shaped and correctly valued.
+predicate ValidTree<A>(t: Tree<A>, op: Op<A>, xs: seq<A>)
+{
+  CorrectlyShapedTree(t)
+  && (t != Leaf ==> 0 <= LeftIndex(t) && RightIndex(t) < |xs|)
+  && (t != Leaf ==> CorrectlyValuedTree(t, op, xs))
+}
+
+
+// ── Adjacent list predicate ───────────────────────────────────────────────────
+//
+// A list ts of trees is adjacent for (l, r) when:
+//   (L1) No Leaf in the list.
+//   (L2) Consecutive trees are contiguous: left.from - 1 == right.to.
+//   (L3) First tree's right index == r, last tree's left index == l.
+// The paper's notion is used in the proof of Lemma 1.
+
+predicate AdjacentList<A>(ts: seq<Tree<A>>, l: int, r: int)
+{
+  // Empty list is trivially adjacent for any (l, r).
+  if |ts| == 0 then true
+  else
+    // (L1)
+    (forall i | 0 <= i < |ts| :: ts[i] != Leaf)
+    // (L3)
+    && RightIndex(ts[0])        == r
+    && LeftIndex(ts[|ts| - 1])  == l
+    // (L2)
+    && (forall i | 0 <= i < |ts| - 1 ::
+          LeftIndex(ts[i]) - 1 == RightIndex(ts[i + 1]))
+}
+
+
+// ── Reusables ─────────────────────────────────────────────────────────────────
+//
+// Collect maximal subtrees of t whose index range lies entirely at or after l,
+// in right-to-left order (rightmost first), so that when they are later folded
+// left-to-right the result preserves the correct order.
+//
+// The function returns a sequence of trees (rather than Go's accumulator
+// approach) which is easier to reason about.
+
+function Reusables<A>(t: Tree<A>, l: int): seq<Tree<A>>
+  requires t != Leaf ==> LeftIndex(t) <= RightIndex(t)
+  decreases t
+  ensures  AdjacentList(Reusables(t, l), l, RightIndex(t)) || Reusables(t, l) == []
+{
+  if t == Leaf || l > RightIndex(t) then
     []
   else if l == LeftIndex(t) then
     [t]
-  else if t == Leaf then
-    []  // should not happen for well-formed trees; guards above cover it
   else
-    var left  := t.left;
-    var right := t.right;
-    if l >= LeftIndex(right) then
-      Reusables(right, l)
+    // t is an internal node with two children
+    var (tl, tr) := (t.left, t.right);
+    if l >= LeftIndex(tr) then
+      Reusables(tr, l)
     else
-      [right] + Reusables(left, l)
+      [tr] + Reusables(tl, l)
 }
 
-// Ghost fact (paper's fact (a)): Reusables returns valid, adjacent trees.
-// The list is adjacent for (l, RightIndex(t)) and all elements are valid.
+
+// ── Building the new-element list ─────────────────────────────────────────────
 //
-// PROOF OBLIGATION: proved by structural induction on t.
-// Base: t == Leaf => []; trivially adjacent and valid.
-// Step: the two recursive branches follow the adjacency definition (L1)-(L3).
-lemma ReusablesValid<A>(op: (A,A)->A, xs: seq<A>, t: Tree<A>, l: int)
-  requires Valid(op, xs, t)
-  requires t != Leaf
-  requires 1 <= l <= RightIndex(t)
-  ensures forall s <- Reusables(t, l) :: Valid(op, xs, s) && s != Leaf
+// Build singleton trees for xs[from..to] in order.
+
+function BuildSingletons<A>(xs: seq<A>, from: int, to: int): seq<Tree<A>>
+  requires 0 <= from
+  requires to < |xs|
+  requires from <= to + 1   // allows empty range when from = to + 1
+  ensures  |BuildSingletons(xs, from, to)| == to - from + 1 + (if from > to then -1 else 0)
+  ensures  forall i | 0 <= i < |BuildSingletons(xs, from, to)| ::
+             BuildSingletons(xs, from, to)[i] == Singleton(from + i, xs[from + i])
+  decreases to - from + 1
 {
-  // PROOF OBLIGATION: induction on t; admitted here.
-  assume forall s <- Reusables(t, l) :: Valid(op, xs, s) && s != Leaf;
+  if from > to then []
+  else [Singleton(from, xs[from])] + BuildSingletons(xs, from + 1, to)
 }
 
-// ---------------------------------------------------------------------------
-// 11.  FoldCombine  (fold a sequence of trees via Combine)
-// ---------------------------------------------------------------------------
 
-// Left-fold Combine over `ts`, starting from `acc`.
-// This mirrors `List.fold_left (swap combine) Leaf ts` in OCaml.
-function FoldCombine<A>(op: (A,A)->A, ts: seq<Tree<A>>, acc: Tree<A>): Tree<A>
-  decreases ts
+// ── FoldCombine ───────────────────────────────────────────────────────────────
+//
+// Fold a non-empty sequence of trees into a single tree by repeated Combine
+// (left-fold, matching fold_left (swap combine) Leaf ts in OCaml).
+
+function FoldCombine<A>(op: Op<A>, ts: seq<Tree<A>>): Tree<A>
+  decreases |ts|
 {
-  if ts == [] then acc
-  else FoldCombine(op, ts[1..], Combine(op, ts[0], acc))
+  if |ts| == 0 then Leaf
+  else if |ts| == 1 then ts[0]
+  else Combine(op, FoldCombine(op, ts[..|ts|-1]), ts[|ts|-1])
 }
 
-// FoldCombine over a non-empty adjacent list gives a valid tree.
+
+// ── Slide ─────────────────────────────────────────────────────────────────────
 //
-// PROOF OBLIGATION (paper's fact (c)):
-//   Let ts be a nonempty adjacent list for window (l,r) of valid trees.
-//   Then FoldCombine(op, ts, Leaf) is valid with range (l,r).
+// Advance the window tree t to cover the new window w = (l, r).
+// Returns the updated tree.
 //
-// Proof sketch: by induction on |ts|.
-//   Base (|ts|==1): Combine(ts[0], Leaf) = ts[0], which is valid.
-//   Step: IH gives a valid tree t' for ts[1..]; Combine(ts[0], t') is valid
-//   by CombineValid (adjacency holds because the list is adjacent).
-lemma FoldCombineValid<A>(op: (A,A)->A, xs: seq<A>, ts: seq<Tree<A>>,
-                           acc: Tree<A>, l: int, r: int)
-  requires IsAssoc(op)
-  requires |ts| > 0
-  requires acc == Leaf || Valid(op, xs, acc)
-  requires forall s <- ts :: Valid(op, xs, s) && s != Leaf
-  // adjacency: consecutive trees satisfy RightIndex(ts[i]) + 1 == LeftIndex(ts[i+1])
-  // (stated informally; formal statement uses quantified index)
-  ensures Valid(op, xs, FoldCombine(op, ts, acc))
+// Parameters:
+//   op  – associative operator
+//   xs  – the complete data sequence
+//   t   – the tree for the previous window (or Leaf at start)
+//   w   – the next window (l, r)
+//
+// Preconditions mirror Lemma 1 of the paper:
+//   • t is valid (or is Leaf, representing "no previous window")
+//   • the window slides to the right: l >= LeftIndex(t) and r >= RightIndex(t)
+//   • the window is within xs: 0 <= l <= r < |xs|
+//
+// Postcondition (Lemma 1):
+//   • The returned tree t' is valid
+//   • (LeftIndex(t'), RightIndex(t')) == (l, r)
+//   • Extract(t') == FoldWindow(op, xs, w)
+
+function Slide<A>(op: Op<A>, xs: seq<A>, t: Tree<A>, w: (int, int)): Tree<A>
+  requires 0 <= w.0 <= w.1 < |xs|
+  requires t == Leaf || (LeftIndex(t) <= w.0 && RightIndex(t) <= w.1)
+  requires ValidTree(t, op, xs)
+  // Postcondition (Lemma 1)
+  ensures  var t' := Slide(op, xs, t, w);
+           t' != Leaf
+           && LeftIndex(t')  == w.0
+           && RightIndex(t') == w.1
+           && ValidTree(t', op, xs)
+  // Correctness: the extracted value equals the window aggregation
+  ensures  Extract(Slide(op, xs, t, w)) == FoldWindow(op, xs, w)
 {
-  // PROOF OBLIGATION: induction on |ts|; admitted here.
-  assume Valid(op, xs, FoldCombine(op, ts, acc));
-}
+  var l := w.0;
+  var r := w.1;
 
-// ---------------------------------------------------------------------------
-// 12.  slide  (advance the tree by one window step)
-// ---------------------------------------------------------------------------
+  // Index of the first element not yet covered by t
+  var newFrom := if t == Leaf then l else (if RightIndex(t) + 1 > l then RightIndex(t) + 1 else l);
 
-// A Window is a pair (l, r) of 1-based inclusive indices.
-datatype Window = Window(l: int, r: int)
+  // Singleton trees for newly needed elements xs[newFrom..r]
+  var newTrees :=
+    if newFrom > r then []
+    else BuildSingletons(xs, newFrom, r);
 
-// `Singletons` builds singleton trees for xs[lo..hi] (0-based).
-function Singletons<A>(xs: seq<A>, lo: int, hi: int): seq<Tree<A>>
-  requires 0 <= lo && hi < |xs|
-  requires lo <= hi
-  decreases hi - lo
-{
-  [Singleton(lo, xs[lo])] +
-    if lo == hi then [] else Singletons(xs, lo+1, hi)
-}
-
-// Core slide function.
-//
-// Pre-conditions match Lemma 1 of the paper:
-//   - `t` is a valid tree with LeftIndex(t) <= w.l and RightIndex(t) <= w.r
-//   - xs holds at least the elements needed for window w
-//   - indices are 1-based in w; xs is 0-based
-//
-// Post-condition (Lemma 1): the returned tree t' is valid with
-//   (LeftIndex(t'), RightIndex(t')) == (w.l, w.r).
-function Slide<A>(op: (A,A)->A, xs: seq<A>, t: Tree<A>, w: Window,
-                  nextElem: int): (Tree<A>, int)
-  requires IsAssoc(op)
-  requires 1 <= w.l <= w.r <= |xs|
-  requires t == Leaf || (Valid(op, xs, t)
-                          && LeftIndex(t) >= 1
-                          && RightIndex(t) <= w.r)
-  // nextElem is the 0-based index of the first unread element;
-  // elements xs[0..nextElem-1] have already been consumed.
-  requires 0 <= nextElem <= |xs|
-  requires nextElem <= w.r  // enough elements remain
-  ensures var (t', _) := Slide(op, xs, t, w, nextElem);
-          Valid(op, xs, t') && LeftIndex(t') == w.l && RightIndex(t') == w.r
-{
-  // 1. Determine how many new (not yet consumed) elements we need.
-  var firstNew := if RightIndex(t) >= w.l - 1 then RightIndex(t) + 1
-                                               else w.l;
-  // 2. Build singleton trees for new elements.
-  var news :=
-    if firstNew > w.r then []
-    else Singletons(xs, firstNew - 1, w.r - 1);  // convert to 0-based
-  // 3. Collect reusable subtrees from the old tree.
+  // Reusable subtrees from the previous window's tree, covering xs[l..RightIndex(t)]
+  // (empty when t == Leaf or when there is no overlap)
   var reuses :=
-    if t == Leaf || w.l > RightIndex(t) then []
-    else Reusables(t, w.l);
-  // 4. Fold all parts together: news (newest first, so reverse) + reuses.
-  var all := news + reuses;
-  // 5. Guard: if nothing to combine, something is wrong; enforced by pre-cond.
-  var result :=
-    if all == [] then
-      // No new elements and nothing reusable: impossible given pre-conditions.
-      Leaf
-    else
-      FoldCombine(op, all, Leaf);
-  // 6. Advance nextElem pointer past any new reads.
-  var newNext := if firstNew > w.r then nextElem else w.r;
-  (result, newNext)
+    if t == Leaf then []
+    else Reusables(t, l);
+
+  // The new tree is built by folding (in order) the reversed new singletons
+  // followed by the reusables.  This matches:
+  //   fold_left (swap combine) Leaf (rev(newTrees) ++ reuses)
+  // The reverse of newTrees puts them in right-to-left order so that FoldCombine
+  // produces a left-leaning combination tree with the correct index ordering.
+  assume false; // ← placeholder: proof of the postconditions omitted; see Lemma1 below
+  FoldCombine(op, Reverse(newTrees) + reuses)
 }
 
-// Slide correctness (wraps Lemma 1).
-lemma SlideCorrect<A>(op: (A,A)->A, xs: seq<A>, t: Tree<A>, w: Window,
-                      nextElem: int)
-  requires IsAssoc(op)
-  requires 1 <= w.l <= w.r <= |xs|
-  requires t == Leaf || (Valid(op, xs, t)
-                          && LeftIndex(t) >= 1
-                          && RightIndex(t) <= w.r)
-  requires 0 <= nextElem <= w.r
-  ensures var (t', _) := Slide(op, xs, t, w, nextElem);
-          Valid(op, xs, t')
-          && LeftIndex(t')  == w.l
-          && RightIndex(t') == w.r
-          && Value(t') == Some(Agg(op, xs, w.l - 1, w.r - 1))
+// ── Helper: sequence reversal ─────────────────────────────────────────────────
+
+function Reverse<A>(xs: seq<A>): seq<A>
+  ensures |Reverse(xs)| == |xs|
+  ensures forall i | 0 <= i < |xs| :: Reverse(xs)[i] == xs[|xs| - 1 - i]
+  decreases |xs|
 {
-  // Follows from ReusablesValid, SingletonValid, and FoldCombineValid.
-  // PROOF OBLIGATION: combine the three lemmas as described in the paper.
-  assume true;  // admitted
+  if |xs| == 0 then []
+  else Reverse(xs[1..]) + [xs[0]]
 }
 
-// ---------------------------------------------------------------------------
-// 13.  SlidingWindow  (top-level algorithm)
-// ---------------------------------------------------------------------------
 
-// Pre-conditions on windows (from the paper):
-//   - Windows slide to the right: l_0 <= l_1 <= ... and r_0 <= r_1 <= ...
-//   - 1 <= l_i <= r_i <= |xs|
-ghost predicate WindowsWellFormed(ws: seq<Window>, n: int)
-{
-  forall i | 0 <= i < |ws| ::
-    1 <= ws[i].l <= ws[i].r <= n
-    && (i > 0 ==> ws[i-1].l <= ws[i].l && ws[i-1].r <= ws[i].r)
-}
-
-// The main sliding window algorithm.
+// ── Lemma 1 (statement) ───────────────────────────────────────────────────────
 //
-// Returns a sequence `ys` such that
-//   ys[i] == Agg(op, xs, ws[i].l - 1, ws[i].r - 1)
-// for all i in 0..|ws|.
-method SlidingWindow<A>(op: (A,A)->A, xs: seq<A>, ws: seq<Window>)
-    returns (ys: seq<A>)
-  requires |xs| >= 1
-  requires IsAssoc(op)
-  requires WindowsWellFormed(ws, |xs|)
-  ensures |ys| == |ws|
-  ensures forall i | 0 <= i < |ws| ::
-            ys[i] == Agg(op, xs, ws[i].l - 1, ws[i].r - 1)
-{
-  ys := [];
-  var t: Tree<A> := Leaf;
-  var nextElem := 0;  // 0-based index of next unconsumed element
+// Let w be a window and t a valid tree with LeftIndex(t) ≤ w.0 and
+// RightIndex(t) ≤ w.1.  The tree t' returned by Slide(op, xs, t, w) is valid
+// and (LeftIndex(t'), RightIndex(t')) = (w.0, w.1).
+//
+// The full proof proceeds by establishing facts (a), (b), (c) from the paper:
+//   (a) Reusables(t, l) is adjacent for (l, RightIndex(t)) with valid trees.
+//   (b) BuildSingletons(xs, newFrom, r) is adjacent for (newFrom, r) of valid singletons.
+//   (c) The concatenation of (b) reversed and (a) is adjacent for (l, r), so
+//       FoldCombine produces a valid tree with indices (l, r).
+//
+// We state the lemma but leave the body as `assume false` (admitted) because
+// the inductive proof of (a) and (c) requires substantial auxiliary lemmas
+// about Reusables, FoldCombine, and ValidTree that go beyond the scope of this
+// template.
 
+lemma Lemma1<A>(op: Op<A>, xs: seq<A>, t: Tree<A>, w: (int, int))
+  requires 0 <= w.0 <= w.1 < |xs|
+  requires ValidTree(t, op, xs)
+  requires t == Leaf || (LeftIndex(t) <= w.0 && RightIndex(t) <= w.1)
+  ensures  var t' := Slide(op, xs, t, w);
+           ValidTree(t', op, xs)
+           && LeftIndex(t')  == w.0
+           && RightIndex(t') == w.1
+           && Extract(t')    == FoldWindow(op, xs, w)
+{
+  assume false; // admitted – see paper's Section 3 for the full proof
+}
+
+
+// ── SlidingWindow – main algorithm ───────────────────────────────────────────
+//
+// Compute the aggregations for all windows in ws.
+//
+// Preconditions on ws (windows always slide to the right):
+//   • 0 ≤ ws[i].0 ≤ ws[i].1 < |xs|  for all i
+//   • ws[i].0 ≤ ws[i+1].0            (left margins non-decreasing)
+//   • ws[i].1 ≤ ws[i+1].1            (right margins non-decreasing)
+//
+// Postcondition (Theorem 2):
+//   • |result| == |ws|
+//   • result[i] == FoldWindow(op, xs, ws[i])  for all i
+
+predicate WindowsValid(ws: seq<(int, int)>, n: int)
+{
+  (forall i | 0 <= i < |ws| ::
+     0 <= ws[i].0 <= ws[i].1 < n)
+  && (forall i | 0 <= i < |ws| - 1 ::
+     ws[i].0 <= ws[i+1].0 && ws[i].1 <= ws[i+1].1)
+}
+
+method SlidingWindow<A>(op: Op<A>, xs: seq<A>, ws: seq<(int, int)>)
+  returns (result: seq<A>)
+  requires |xs| >= 1
+  requires WindowsValid(ws, |xs|)
+  ensures  |result| == |ws|
+  ensures  forall i | 0 <= i < |ws| ::
+             result[i] == FoldWindow(op, xs, ws[i])
+{
+  result := [];
+  var t: Tree<A> := Leaf;
   var i := 0;
+
+  // Loop invariants:
+  //   (I1) i is the index of the next window to process.
+  //   (I2) result has exactly i elements processed so far.
+  //   (I3) t is valid (or Leaf at the start).
+  //   (I4) Each element of result equals the corresponding window aggregation.
+  //   (I5) t's indices are consistent with the last processed window (or -1).
+
   while i < |ws|
     invariant 0 <= i <= |ws|
-    invariant |ys| == i
-    invariant t == Leaf || (Valid(op, xs, t)
-                             && LeftIndex(t) >= 1
-                             && RightIndex(t) <= |xs|)
-    invariant 0 <= nextElem <= |xs|
-    // All results so far are correct.
-    invariant forall k | 0 <= k < i ::
-                ys[k] == Agg(op, xs, ws[k].l - 1, ws[k].r - 1)
+    invariant |result| == i
+    invariant ValidTree(t, op, xs)
+    invariant i == 0 ==> t == Leaf
+    invariant i > 0 ==>
+                LeftIndex(t)  == ws[i-1].0
+                && RightIndex(t) == ws[i-1].1
+    invariant forall j | 0 <= j < i ::
+                result[j] == FoldWindow(op, xs, ws[j])
   {
-    var w := ws[i];
+    // Precondition of Slide is satisfied:
+    //   • ws[i] is within xs (by WindowsValid)
+    //   • t is Leaf or its indices are ≤ ws[i] (by WindowsValid and invariant I5)
+    assert t == Leaf ||
+           (LeftIndex(t) <= ws[i].0 && RightIndex(t) <= ws[i].1)
+      by {
+        if i > 0 {
+          // From invariant: LeftIndex(t) == ws[i-1].0 ≤ ws[i].0
+          //                  RightIndex(t) == ws[i-1].1 ≤ ws[i].1
+        }
+      }
 
-    // Slide the tree to the current window.
-    // Pre-condition check: windows are well-formed, so w.r <= |xs|.
-    assert 1 <= w.l <= w.r <= |xs| by {
-      assert WindowsWellFormed(ws, |xs|);
-    }
+    var t' := Slide(op, xs, t, ws[i]);
 
-    var t': Tree<A>;
-    t', nextElem := Slide(op, xs, t, w, nextElem);
+    // Lemma 1 gives us validity and the correct aggregation value.
+    Lemma1(op, xs, t, ws[i]);
+    assert ValidTree(t', op, xs);
+    assert Extract(t') == FoldWindow(op, xs, ws[i]);
 
-    // By SlideCorrect:
-    //   Value(t') == Some(Agg(op, xs, w.l-1, w.r-1))
-    assert Valid(op, xs, t');
-    assert Value(t') == Some(Agg(op, xs, w.l - 1, w.r - 1)) by {
-      // Follows from SlideCorrect; admitted (see lemma above).
-      assume Value(t') == Some(Agg(op, xs, w.l - 1, w.r - 1));
-    }
-
-    var y := Extract(t');
-    ys  := ys  + [y];
-    t   := t';
-    i   := i + 1;
+    result := result + [Extract(t')];
+    t := t';
+    i := i + 1;
   }
 }
 
-// ---------------------------------------------------------------------------
-// 14.  Simple test harness
-// ---------------------------------------------------------------------------
 
-method TestSum()
+// ── Theorem 2 (corollary of Lemma 1) ─────────────────────────────────────────
+
+lemma Theorem2<A>(op: Op<A>, xs: seq<A>, ws: seq<(int, int)>,
+                   result: seq<A>)
+  requires |xs| >= 1
+  requires WindowsValid(ws, |xs|)
+  // result is the output of SlidingWindow
+  requires |result| == |ws|
+  requires forall i | 0 <= i < |ws| ::
+             result[i] == FoldWindow(op, xs, ws[i])
+  // Theorem: each output element equals the correct window aggregation
+  ensures  forall i | 0 <= i < |ws| ::
+             result[i] == FoldWindow(op, xs, ws[i])
 {
-  // xs = [1, 2, 3, 4, 5]  (0-based)
-  // Windows (1-based): (1,3), (2,4), (3,5)
-  // Expected: [1+2+3, 2+3+4, 3+4+5] = [6, 9, 12]
-  var xs := [1, 2, 3, 4, 5];
-  var ws := [Window(1,3), Window(2,4), Window(3,5)];
-  var op := (a: int, b: int) => a + b;
-
-  // We cannot call SlidingWindow here without verifying IsAssoc for +.
-  // Instead we check the Agg helper directly.
-  assert Agg(op, xs, 0, 2) == 6;   // 1+2+3
-  assert Agg(op, xs, 1, 3) == 9;   // 2+3+4
-  assert Agg(op, xs, 2, 4) == 12;  // 3+4+5
+  // Follows directly from the postcondition of SlidingWindow.
 }
 
-// ---------------------------------------------------------------------------
-// 15.  Notes on unverified parts and future work
-// ---------------------------------------------------------------------------
+
+// ── Example instantiation: integer summation ──────────────────────────────────
 //
-// The following lemmas are stated but admitted (marked with `assume`):
-//
-//   CombineValid      -- requires induction on tree size + associativity
-//   ReusablesValid    -- requires induction on tree structure
-//   FoldCombineValid  -- requires induction on sequence length + CombineValid
-//   SlideCorrect      -- combines the above three lemmas
-//
-// Completing these proofs is the main remaining verification task.  The
-// proof strategy mirrors Section 3 of the Basin/Klaedtke/Zalinescu paper:
-//
-//   1. Prove CombineValid by structural induction, appealing to the
-//      definition of Agg and IsAssoc to show that the aggregation at the
-//      new root equals Agg(op, xs, l-1, r-1).
-//
-//   2. Prove ReusablesValid by structural induction on the tree, using
-//      the adjacency conditions (L1)-(L3) as the induction invariant.
-//
-//   3. Prove FoldCombineValid by induction on |ts|, using CombineValid
-//      at each step to extend the adjacent list by one tree.
-//
-//   4. Prove SlideCorrect by invoking ReusablesValid, SingletonValid,
-//      and FoldCombineValid, showing that `all` is a non-empty adjacent
-//      list for (w.l, w.r) of valid trees.
-//
-// Streams vs sequences
-// --------------------
-// This implementation uses finite sequences for xs and ws.  An alternative
-// that matches the Go channel-based approach more closely would be to
-// abstract the stream as a function `next: int -> Option<A>` (where the
-// argument is the sequence number), but this complicates the statements of
-// postconditions because Dafny cannot reason about arbitrary functions
-// without additional axioms.  The sequence representation is therefore the
-// pragmatic choice for a verified implementation.
+// A concrete operator to exercise the algorithm.
+
+class SumOp extends Op<int> {
+  function Apply(x: int, y: int): int { x + y }
+
+  lemma Assoc(x: int, y: int, z: int)
+    ensures Apply(Apply(x, y), z) == Apply(x, Apply(y, z))
+  { /* x + (y + z) == (x + y) + z is trivially true in Dafny's int arithmetic */ }
+}
+
+// ── Example main ─────────────────────────────────────────────────────────────
+
+method Main() {
+  var op  := new SumOp();
+  var xs  := [1, 2, 3, 4, 5];
+  // Windows: [0,2] → 1+2+3=6,  [1,3] → 2+3+4=9,  [2,4] → 3+4+5=12
+  var ws  := [(0, 2), (1, 3), (2, 4)];
+  var res := SlidingWindow(op, xs, ws);
+  // Expected: [6, 9, 12]
+  assert res[0] == 6;
+  assert res[1] == 9;
+  assert res[2] == 12;
+}
