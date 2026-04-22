@@ -211,14 +211,26 @@ changes.
 
 [Code](python/sliding.py)
 
+### TypeScript
+
+[Code](typescript/sliding.ts)
+
 ### Rust
+
+[Code](rust/lib.rs)
 
 ### C
 
-### TypeScript
+[Code](c/sliding_window.c)
+[Code](c/sliding_window.h)
+
+### C++
+
+[Code](c++/SlidingWindow.hpp)
 
 ### Dafny
 
+[Code](dafny/SlidingWindow.dfy)
 
 ## References
 
@@ -245,10 +257,8 @@ changes.
 
 ## TODOs
 
-* Review implementations in Rust and Dafny.  Some changes might be
+* Review implementations in Rust, Dafny, ...  Some changes might be
   necessary here.
-
-* Provide implementations in C and TypeScript.
 
 * Provide interactions with the LLMs for code generation.
 
