@@ -26,15 +26,19 @@ func main() {
     )
     flag.Parse()
 
-    fmt.Printf("Go version: %s\n", runtime.Version())
-    fmt.Printf("n=%d k=%d seed=%d op=%s mode=%s\n\n", *n, *k, *seed, *op, *mode)
-
     if *n < 1 || *k < 1 || *stride < 1 || *runs < 0 ||
         !slices.Contains([]string{"sum", "product", "max", "min"}, *op) ||
         !slices.Contains([]string{"sliding", "fixed", "random", "file"}, *mode) {
             fmt.Printf("Error: invalid value\n")
             return
     }
+    if *mode == "file" && *file == "" {
+        fmt.Printf("Error: need --file for mode=file\n")
+        return
+    }
+
+    fmt.Printf("Go version: %s\n", runtime.Version())
+    fmt.Printf("n=%d k=%d seed=%d op=%s mode=%s\n\n", *n, *k, *seed, *op, *mode)
 
     aggOp := selectOp(*op)
     if aggOp == nil {
