@@ -6,17 +6,19 @@ import (
     "math/rand/v2"
     "os"
     "runtime"
+    "slices"
     "time"
 
     "github.com/flxch/sliding_window/go/sliding"
 )
 
+
 func main() {
     var (
         n      = flag.Int("n", 10000000, "number of elements")
-        k      = flag.Int("k", 1000,      "window size (meaningful for certain modes)")
-        seed   = flag.Int("seed", 42,     "random seed")
+        k      = flag.Int("k", 1000, "window size (meaningful for certain modes)")
         op     = flag.String("op", "sum", "operator: sum, product, max, min")
+        seed   = flag.Int("seed", 42, "random seed")
         stride = flag.Int("stride", 1, "window stride, if relevant")
         mode   = flag.String("mode", "sliding", "sliding, fixed, random, file")
         file   = flag.String("file", "", "window spec file (if mode=file)")
@@ -26,6 +28,13 @@ func main() {
 
     fmt.Printf("Go version: %s\n", runtime.Version())
     fmt.Printf("n=%d k=%d seed=%d op=%s mode=%s\n\n", *n, *k, *seed, *op, *mode)
+
+    if *n < 1 || *k < 1 || *stride < 1 || *runs < 0 ||
+        !slices.Contains([]string{"sum", "product", "max", "min"}, *op) ||
+        !slices.Contains([]string{"sliding", "fixed", "random", "file"}, *mode) {
+            fmt.Printf("Error: invalid value\n")
+            return
+    }
 
     aggOp := selectOp(*op)
     if aggOp == nil {
