@@ -138,7 +138,7 @@ in Ocaml.  The paper presents (more or less) the Ocaml implementation.
 
 ### Haskell
 
-[Code](haskell/Sliding.hs)
+[Code](haskell/src/Sliding.hs)
 
 The implementation is very close to the Ocaml implementation and was
 done while writing the paper as a simple exercise and out of

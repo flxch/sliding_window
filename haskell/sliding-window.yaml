@@ -1,0 +1,30 @@
+cabal-version:       2.4
+name:                sliding-window
+version:             0.1.0.0
+synopsis:            Sliding window algorithm and benchmarking
+category:            Algorithms
+build-type:          Simple
+
+library
+  exposed-modules:     Sliding
+  hs-source-dirs:      src
+  build-depends:       base >= 4.12 && < 5
+  default-language:    Haskell2010
+
+executable evaluate
+  main-is:             Evaluate.hs
+  hs-source-dirs:      app
+  build-depends:       base
+                     , sliding-window
+                     , random
+                     , time
+  default-language:    Haskell2010
+
+test-suite sliding-test
+  type:                exitcode-stdio-1.0
+  main-is:             Spec.hs
+  hs-source-dirs:      test
+  build-depends:       base
+                     , sliding-window
+                     , hspec
+  default-language:    Haskell2010

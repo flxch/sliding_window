@@ -1,0 +1,10 @@
+This file configures Stackage and the resolver (GHC version).
+
+```yaml
+resolver: lts-21.25
+
+packages:
+  - .
+
+# Use latest LTS suitable for your system/GHC; adjust as needed.
+# You can generate a default with: `stack new sliding-window` simple.
