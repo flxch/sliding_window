@@ -152,7 +152,7 @@ convenient and makes the Haskell code very succinct and clean.
 
 ### Go
 
-[Code](go/sliding.go)
+[Code](go/sliding/sliding.go)
 
 Go is currently my major programming language.  This is the reason why
 I started with implementing the sliding window algorithm in Go with
@@ -209,7 +209,7 @@ changes.
 
 ### Python
 
-[Code](python/sliding.py)
+[Code](python/sliding/sliding.py)
 
 ### TypeScript
 
