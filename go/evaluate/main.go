@@ -25,7 +25,7 @@ func main() {
         mode   = flag.String("mode", "fixed", "fixed, random, file")
         file   = flag.String("file", "", "window spec file (only relevant for mode=file or -out)")
         runs   = flag.Int("runs", 5, "number of performance runs")
-        naive  = flag.Bool("naive", false, "use naive O(nw) aggregation")
+        naive  = flag.Bool("naive", false, "use naive O(nw) window aggregation")
         out    = flag.Bool("out", false, "dump generated windows to file specified by -file and exit")
     )
     flag.Parse()
@@ -69,7 +69,7 @@ func main() {
         return
     }
 
-    fmt.Printf("Go version: %s\n", runtime.Version())
+    fmt.Printf("Go compiler version: %s\n", runtime.Version())
     fmt.Printf("mode=%s n=%d k=%d s=%d seed=%d op=%s naive=%v\n\n", *mode, *n, *k, *s, *seed, *op, *naive)
 
     aggOp := selectOp(*op)
