@@ -15,71 +15,73 @@ import (
 )
 
 
+const (
+    DEFAULT_STREAM_SIZE  = 10_000_000
+    DEFAULT_WINDOW_SIZE  = 1_000
+    DEFAULT_SLIDE        = 1
+    DEFAULT_SEED         = 42
+    DEFAULT_RUNS         = 5
+    DEFAULT_OP           = "sum"
+    DEFAULT_MODE         = "fixed"
+    DEFAULT_CHAN_SIZE    = 10
+)
+
+
 func main() {
     var (
-        n      = flag.Int("n", 10000000, "number of elements")
-        k      = flag.Int("k", 1000, "window size (irrelevant for mode=file)")
-        s      = flag.Int("s", 1, "window slide (irrelevant for mode=file)")
-        op     = flag.String("op", "sum", "associative operator: sum, product, max, min")
-        seed   = flag.Int("seed", 42, "random seed")
-        mode   = flag.String("mode", "fixed", "fixed, random, file")
-        file   = flag.String("file", "", "window spec file (only relevant for mode=file or -out)")
-        runs   = flag.Int("runs", 5, "number of performance runs")
+        mode   = flag.String("mode", DEFAULT_MODE, "fixed, random, file")
+        n      = flag.Int("n", DEFAULT_STREAM_SIZE, "number of elements")
+        k      = flag.Int("k", DEFAULT_WINDOW_SIZE, "window size (irrelevant for mode=file)")
+        s      = flag.Int("s", DEFAULT_SLIDE, "window slide (irrelevant for mode=file)")
+        seed   = flag.Int("seed", DEFAULT_SEED, "random seed")
+        op     = flag.String("op", DEFAULT_OP, "associative operator: sum, product, max, min")
+        chsize = flag.Int("chan", DEFAULT_CHAN_SIZE, "channel size")
+        file   = flag.String("file", "", "window spec file (only relevant for mode=file or -out) (default: stdin/stdout)")
+        runs   = flag.Int("runs", DEFAULT_RUNS, "number of performance runs")
         naive  = flag.Bool("naive", false, "use naive O(nw) window aggregation")
         out    = flag.Bool("out", false, "dump generated windows to file specified by -file and exit")
     )
     flag.Parse()
-
-    if *n < 1 || *k < 1 || *s < 1 || *runs < 0 ||
+    // Validation of command-line arguments.
+    if *n < 1 || *k < 1 || *s < 1 || *chsize < 0 || *runs < 0 ||
         !slices.Contains([]string{"sum", "product", "max", "min"}, *op) ||
         !slices.Contains([]string{"fixed", "random", "file"}, *mode) {
-            fmt.Printf("Error: invalid value\n")
-            return
-    }
-    if ((*mode == "file") || *out) && *file == "" {
-        fmt.Printf("Error: need --file for mode=file or with -out\n")
-        return
+        fmt.Fprintf(os.Stderr, "Error: invalid value(s)\n")
+        os.Exit(1)
     }
 
-    // Dump windows and exit if -out was set
+    // Dump windows and exit, if -out is set.
     if *out {
         wins, err := generateWindows(*mode, *n, *k, *s, int64(*seed), *file)
         if err != nil {
-            fmt.Printf("Error: %v\n", err)
-            return
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
         }
-        f, err := os.Create(*file)
-        if err != nil {
-            fmt.Printf("Error: %v\n", err)
-            return
+        if err = dumpWindows(*file, wins); err != nil {
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
         }
-        defer f.Close()
-        buf := bufio.NewWriter(f)
-        for _, w := range wins {
-            if _, err := fmt.Fprintf(buf, "%d,%d\n", w.Left, w.Right); err != nil {
-                fmt.Printf("Error: %v\n", err)
-                return
-            }
+        if *file != "" {
+            fmt.Printf("Dumped %d windows to %s\n", len(wins), *file)
         }
-        if err := buf.Flush(); err != nil {
-            fmt.Printf("Error: %v\n", err)
-            return
-        }
-        fmt.Printf("Dumped %d windows to %s\n", len(wins), *file)
         return
     }
 
     fmt.Printf("Go compiler version: %s\n", runtime.Version())
-    fmt.Printf("mode=%s n=%d k=%d s=%d seed=%d op=%s naive=%v\n\n", *mode, *n, *k, *s, *seed, *op, *naive)
+    fmt.Printf("mode=%s n=%d k=%d s=%d seed=%d op=%s chan=%d naive=%v\n\n",
+        *mode, *n, *k, *s, *seed, *op, *chsize, *naive)
 
-    aggOp := selectOp(*op)
+    aggOp, ptrToCounter := selectOp(*op)
     if aggOp == nil {
-        fmt.Printf("Error: unknown operator %s\n", *op)
-        return
+        fmt.Fprintf(os.Stderr, "Error: unknown operator %s\n", *op)
+        os.Exit(1)
     }
 
     for run, elems := 1, make([]int, *n); run <= *runs; run++ {
         fmt.Printf("run=%d\t", run)
+
+        // Reset counter for run
+        *ptrToCounter = 0
 
         // Input generation
         r := rand.New(rand.NewPCG(uint64(*seed + 2 * run), 1234))
@@ -90,33 +92,37 @@ func main() {
         // Window generation/loading
         wins, err := generateWindows(*mode, *n, *k, *s, int64(*seed + 2 * run + 1), *file)
         if err != nil {
-            fmt.Printf("Error: %v\n", err)
-            return
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
         }
         // Could output here more details of the windows, e.g., a histogram.
         fmt.Printf("windows=%d\t", len(wins))
 
         // Window aggregation
-        results, dur := aggregate(aggOp, elems, wins, *naive)
+        results, dur := aggregate(aggOp, *chsize, elems, wins, *naive)
 
-        fmt.Printf("results=%d\taggregation time=%.6fs\n", len(results), dur.Seconds())
+        // Output measurements
+        fmt.Printf("results=%d\tcount=%d\taggregation time=%.6fs\n",
+            len(results), *ptrToCounter, dur.Seconds())
     }
 }
 
 
-// Operator selection for aggregation
-func selectOp(name string) sliding.Op[int] {
+// Operator selection for aggregation; also returns a pointer to a counter, which
+// is increased for every operator application
+func selectOp(name string) (sliding.Op[int], *int) {
+    var c int
     switch name {
     case "sum":
-        return func(a, b int) int { return a + b }
+        return func(a, b int) int { c++; return a + b }, &c
     case "product":
-        return func(a, b int) int { return a * b }
+        return func(a, b int) int { c++; return a * b }, &c
     case "max":
-        return func(a, b int) int { if a > b { return a } else { return b } }
+        return func(a, b int) int { c++; if a > b { return a } else { return b } }, &c
     case "min":
-        return func(a, b int) int { if a < b { return a } else { return b } }
+        return func(a, b int) int { c++; if a < b { return a } else { return b } }, &c
     default:
-        return nil
+        return nil, nil
     }
 }
 
@@ -144,13 +150,16 @@ func generateWindows(mode string, n, k, s int, seed int64, filePath string) ([]s
             }
         }
     case "file":
-        f, err := os.Open(filePath)
-        if err != nil {
-            return nil, fmt.Errorf("Cannot open window file: %v", err)
+        f := os.Stdin
+        if filePath != "" {
+            var err error
+            if f, err = os.Open(filePath); err != nil {
+                return nil, fmt.Errorf("Cannot open window file: %v", err)
+            }
+            defer f.Close()
         }
-        defer f.Close()
         buf := bufio.NewReader(f)
-        var left, right int
+
         for {
             line, err := buf.ReadString('\n')
             if err == io.EOF {
@@ -158,6 +167,8 @@ func generateWindows(mode string, n, k, s int, seed int64, filePath string) ([]s
             } else if err != nil {
                 return nil, err
             }
+
+            var left, right int
             if _, err := fmt.Sscanf(line, "%d,%d\n", &left, &right); err != nil {
                 return nil, fmt.Errorf("malformed line: %q: %v", line, err)
             }
@@ -173,6 +184,7 @@ func generateWindows(mode string, n, k, s int, seed int64, filePath string) ([]s
             if l := len(ws); l > 0 && (ws[l-1].Left > left || ws[l-1].Right > right) {
                 return nil, fmt.Errorf("window [%d, %d] does not slide", left, right)
             }
+
             ws = append(ws, sliding.Window{Left: left, Right: right})
         }
     default:
@@ -198,41 +210,72 @@ func naiveAggregation(op sliding.Op[int], elems []int, windows []sliding.Window)
     return outs
 }
 
-// Aggregate and messure running time for window aggregations.
-func aggregate(op sliding.Op[int], elems []int, ins []sliding.Window, naive bool) ([]int, time.Duration) {
+// Aggregate and measure running time for window aggregations.
+func aggregate(op sliding.Op[int], chsize int, elems []int, ins []sliding.Window, naive bool) ([]int, time.Duration) {
     if naive {
-        runtime.GC()
-        start := time.Now()
-        outs := naiveAggregation(op, elems, ins)
-        stop := time.Now()
-        return outs, stop.Sub(start)
-    } else {
-        // Note that we usually do not know in advance how many elements outs
-        // will have, since the sliding window is a stream of windows.
-        outs := make([]int, 0)
-        inCh := make(chan int, 0)
-        go func() {
-            for _, e := range elems { inCh <- e }
-            close(inCh)
-        }()
-        outCh := make(chan int, 0)
-        wait := make(chan struct{})
-        go func() {
-            for v := range outCh {
-                outs = append(outs, v)
-            }
-            close(wait)
-        }()
-        d := 0
-        next := func() (sliding.Window, bool) {
-            if d >= len(ins) { return sliding.Window{}, false }
-            w := ins[d]; d++; return w, true
-        }
+        // Run the naive aggregation for the windows: O(len(ins)*len(elems)).
         runtime.GC()
         stopwatch := time.Now()
-        sliding.SlidingWindow(inCh, outCh, op, next)
-        close(outCh)
-        <-wait
+        outs := naiveAggregation(op, elems, ins)
         return outs, time.Since(stopwatch)
     }
+
+    // Setup.
+    inCh := make(chan int, chsize)
+    go func() {
+        for _, e := range elems {
+            inCh <- e
+        }
+        close(inCh)
+    }()
+    outCh := make(chan int, chsize)
+    outs := make([]int, 0, len(ins))
+    // Note that we already allocate here sufficient memory for the agregated
+    // window results.  The reason is that we want to focus on the performance
+    // of the sliding window algorithm only.
+    wait := make(chan struct{})
+    go func() {
+        for v := range outCh {
+            outs = append(outs, v)
+        }
+        close(wait)
+    }()
+    next := func() (sliding.Window, bool) {
+        if len(ins) == 0 {
+            return sliding.Window{}, false
+        }
+        w := ins[0]
+        ins = ins[1:]
+        return w, true
+    }
+
+    // Run sliding window algorithm.
+    runtime.GC()
+    stopwatch := time.Now()
+    sliding.SlidingWindow(inCh, outCh, op, next)
+    close(outCh)
+    <-wait
+
+    return outs, time.Since(stopwatch)
+}
+
+// Dump left and right bounds for each window on a line.
+func dumpWindows(file string, wins []sliding.Window) error {
+    f := os.Stdout
+    if file != "" {
+        var err error
+        if f, err = os.Create(file); err != nil {
+            return err
+        }
+        defer f.Close()
+    }
+    buf := bufio.NewWriter(f)
+
+    for _, w := range wins {
+        if _, err := fmt.Fprintf(buf, "%d,%d\n", w.Left, w.Right); err != nil {
+            return err
+        }
+    }
+
+    return buf.Flush()
 }
