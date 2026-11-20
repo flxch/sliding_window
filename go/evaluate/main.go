@@ -8,6 +8,7 @@ import (
     "math/rand/v2"
     "os"
     "runtime"
+    "runtime/pprof"
     "slices"
     "time"
 
@@ -40,6 +41,7 @@ func main() {
         runs   = flag.Int("runs", DEFAULT_RUNS, "number of performance runs")
         naive  = flag.Bool("naive", false, "use naive O(nw) window aggregation")
         out    = flag.Bool("out", false, "dump generated windows to file specified by -file and exit")
+        cpuprof= flag.String("cpuprof", "", "file for cpu profile")
     )
     flag.Parse()
     // Validation of command-line arguments.
@@ -50,6 +52,8 @@ func main() {
         os.Exit(1)
     }
 
+
+    /////////////////////////////////////////////////////////////////////////
     // Dump windows and exit, if -out is set.
     if *out {
         wins, err := generateWindows(*mode, *n, *k, *s, int64(*seed), *file)
@@ -66,16 +70,48 @@ func main() {
         }
         return
     }
-
-    fmt.Printf("Go compiler version: %s\n", runtime.Version())
-    fmt.Printf("mode=%s n=%d k=%d s=%d seed=%d op=%s chan=%d naive=%v\n\n",
-        *mode, *n, *k, *s, *seed, *op, *chsize, *naive)
+    /////////////////////////////////////////////////////////////////////////
 
     aggOp, ptrToCounter := selectOp(*op)
     if aggOp == nil {
         fmt.Fprintf(os.Stderr, "Error: unknown operator %s\n", *op)
         os.Exit(1)
     }
+
+    /////////////////////////////////////////////////////////////////////////
+    // Profile aggregation
+    if *cpuprof != "" {
+        cpuProfileFile, err := os.Create(*cpuprof)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
+        }
+        defer cpuProfileFile.Close()
+        // Input generation
+        elems := make([]int, *n)
+        r := rand.New(rand.NewPCG(uint64(*seed + 2), 1234))
+        for i := 0; i < *n; i++ {
+            elems[i] = int(r.Int32())
+        }
+        wins, err := generateWindows(*mode, *n, *k, *s, int64(*seed + 1), *file)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
+        }
+        // Profile aggregation
+        if err := pprof.StartCPUProfile(cpuProfileFile); err != nil {
+            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+            os.Exit(1)
+        }
+        defer pprof.StopCPUProfile()
+        aggregate(aggOp, *chsize, elems, wins)
+        return
+    }
+    /////////////////////////////////////////////////////////////////////////
+
+    fmt.Printf("Go compiler version: %s\n", runtime.Version())
+    fmt.Printf("mode=%s n=%d k=%d s=%d seed=%d op=%s chan=%d naive=%v\n\n",
+        *mode, *n, *k, *s, *seed, *op, *chsize, *naive)
 
     for run, elems := 1, make([]int, *n); run <= *runs; run++ {
         fmt.Printf("run=%d\t", run)
@@ -99,11 +135,18 @@ func main() {
         fmt.Printf("windows=%d\t", len(wins))
 
         // Window aggregation
-        results, dur := aggregate(aggOp, *chsize, elems, wins, *naive)
+        var results []int
+        var dur time.Duration
+        var allocs uint64
+        if *naive {
+            results, dur, allocs = aggregateNaive(aggOp, elems, wins)
+        } else {
+            results, dur, allocs = aggregate(aggOp, *chsize, elems, wins)
+        }
 
         // Output measurements
-        fmt.Printf("results=%d\tcount=%d\taggregation time=%.6fs\n",
-            len(results), *ptrToCounter, dur.Seconds())
+        fmt.Printf("results=%d\tcount=%d\taggregation time=%.6fs\theap allocations: %s\n",
+            len(results), *ptrToCounter, dur.Seconds(), formatBytes(allocs))
     }
 }
 
@@ -135,6 +178,7 @@ func generateWindows(mode string, n, k, s int, seed int64, filePath string) ([]s
             ws = append(ws, sliding.Window{Left: i, Right: i + k - 1})
         }
     case "random":
+        // The window size can grow and shrink arbitarily.
         r := rand.New(rand.NewPCG(uint64(seed), 1234))
         left := r.IntN(s + 1)
         right := left + k
@@ -149,6 +193,18 @@ func generateWindows(mode string, n, k, s int, seed int64, filePath string) ([]s
                 right = left + r.IntN(s + 1)
             }
         }
+    // case "random":
+    //     // Randomize window size slightly around k.
+    //     r := rand.New(rand.NewPCG(uint64(seed), 1234))
+    //     left := 0
+    //     for {
+    //         right := max(left + (k-1) + r.IntN(21) - 10, left)
+    //         if right >= n {
+    //             break
+    //         }
+    //         ws = append(ws, sliding.Window{Left: left, Right: right})
+    //         left += r.IntN(s)
+    //     }
     case "file":
         f := os.Stdin
         if filePath != "" {
@@ -193,10 +249,15 @@ func generateWindows(mode string, n, k, s int, seed int64, filePath string) ([]s
     return ws, nil
 }
 
-// naiveAggregation computes the aggregation for each window in a naive O(nw) manner.
-func naiveAggregation(op sliding.Op[int], elems []int, windows []sliding.Window) []int {
-    outs := make([]int, 0, len(windows))
-    for _, w := range windows {
+// aggregateNaive computes the aggregation for each window in a naive O(nw)
+// manner.  Returns also running time (s) and heap allocations (bytes).
+func aggregateNaive(op sliding.Op[int], elems []int, ins []sliding.Window) ([]int, time.Duration, uint64) {
+    outs := make([]int, 0, len(ins))
+
+    beforeAllocs := readMemMetrics()
+    stopwatch := time.Now()
+
+    for _, w := range ins {
         if w.Left < 0 || w.Right >= len(elems) || w.Left > w.Right {
             // skip invalid windows
             continue
@@ -207,19 +268,15 @@ func naiveAggregation(op sliding.Op[int], elems []int, windows []sliding.Window)
         }
         outs = append(outs, acc)
     }
-    return outs
+
+    dur := time.Since(stopwatch)
+    afterAllocs := readMemMetrics()
+
+    return outs, dur, afterAllocs - beforeAllocs
 }
 
 // Aggregate and measure running time for window aggregations.
-func aggregate(op sliding.Op[int], chsize int, elems []int, ins []sliding.Window, naive bool) ([]int, time.Duration) {
-    if naive {
-        // Run the naive aggregation for the windows: O(len(ins)*len(elems)).
-        runtime.GC()
-        stopwatch := time.Now()
-        outs := naiveAggregation(op, elems, ins)
-        return outs, time.Since(stopwatch)
-    }
-
+func aggregate(op sliding.Op[int], chsize int, elems []int, ins []sliding.Window) ([]int, time.Duration, uint64) {
     // Setup.
     inCh := make(chan int, chsize)
     go func() {
@@ -250,13 +307,18 @@ func aggregate(op sliding.Op[int], chsize int, elems []int, ins []sliding.Window
     }
 
     // Run sliding window algorithm.
-    runtime.GC()
+    beforeAllocs := readMemMetrics()
     stopwatch := time.Now()
+
+
     sliding.SlidingWindow(inCh, outCh, op, next)
     close(outCh)
     <-wait
 
-    return outs, time.Since(stopwatch)
+    dur := time.Since(stopwatch)
+    afterAllocs := readMemMetrics()
+
+    return outs, dur, afterAllocs - beforeAllocs
 }
 
 // Dump left and right bounds for each window on a line.
@@ -278,4 +340,61 @@ func dumpWindows(file string, wins []sliding.Window) error {
     }
 
     return buf.Flush()
+}
+
+
+func readMemMetrics() uint64 {
+    // Force a full stop-the-world/mark-sweep cycle.  Time consuming. Can
+    // trigger extra runtime/background work.  We accept this. We want a cleaned
+    // heap, when taking measurements.
+    runtime.GC()
+
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+    return m.TotalAlloc
+}
+
+// func readMemMetrics() (uint64, uint64) {
+//     var allocsBytes, freesBytes uint64 // heapObjectsBytes
+//
+//     samples := []metrics.Sample{
+//         {Name: "/gc/heap/allocs:bytes"},
+//         {Name: "/gc/heap/frees:bytes"},
+//         // {Name: "/memory/classes/heap/objects:bytes"},
+//     }
+//     metrics.Read(samples)
+//
+//     for _, s := range samples {
+//         if s.Value.Kind() != metrics.KindUint64 {
+//             continue
+//         }
+//         switch s.Name {
+//         case "/gc/heap/allocs:bytes":
+//             allocsBytes = s.Value.Uint64()
+//         case "/gc/heap/frees:bytes":
+//             freesBytes = s.Value.Uint64()
+//             //case "/memory/classes/heap/objects:bytes":
+//             //  heapObjectsBytes = s.Value.Uint64()
+//         }
+//     }
+//
+//     return allocsBytes, freesBytes
+// }
+
+// Convert n bytes in a human-readable string.
+func formatBytes(bytes uint64) string {
+    const unit = 1024
+    if bytes < unit {
+        return fmt.Sprintf("%d B", bytes)
+    }
+
+    div, exp := uint64(unit), 0
+    for n := bytes / unit; n >= unit; n /= unit {
+        div *= unit
+        exp++
+    }
+
+    // Units: KB, MB, GB, TB, PB, EB
+    const suffixes = "KMGTPE"
+    return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), suffixes[exp])
 }
