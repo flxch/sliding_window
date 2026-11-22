@@ -1,4 +1,6 @@
-# OCaml Sliding Window Implementation
+# OCaml Implementation of the Sliding Window Implementation
+
+- Uses Dune for build and packaging. No external dependencies except `cmdliner` for CLI and `ppx_inline_test` for tests.
 
 ## Structure
 

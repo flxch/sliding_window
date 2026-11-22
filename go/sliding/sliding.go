@@ -189,6 +189,7 @@ func reusables[A any](op Op[option[A]], t *tree[A], i int, acc *tree[A]) *tree[A
         }
         if t1, t2 := t.children(); i >= t2.leftIndex() {
             t = t2 // tail call: reusables(op, t2, l, acc)
+            // add t2 to pool
         } else {
             acc = combine(op, t2, acc)
             t = t1 // tail call: reusables(op, t1, l, acc)
