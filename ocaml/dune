@@ -1,0 +1,18 @@
+(library
+ (name sliding)
+ (public_name sliding_window.sliding)
+ (modules sliding)
+)
+
+(executable
+ (name evaluate)
+ (modules evaluate)
+ (libraries sliding cmdliner unix)
+)
+
+test
+ (name test_sliding)
+ (modules test_sliding)
+ (libraries sliding)
+ (preprocess (pps ppx_inline_test))
+ (inline_tests)
