@@ -35,7 +35,7 @@ func newSetup[A any](in <-chan A, op Op[A], k int) *setup[A] {
         recycles: make([]tree, k),
         top:      k,
     }
-    // Every node is reusable for the empty tree.
+    // Every tree node is reusable for the empty tree.
     for i := 0; i < k; i++ {
         S.recycles[i] = tree(i)
         S.nodes[i].left, S.nodes[i].right = leaf, leaf
@@ -44,12 +44,14 @@ func newSetup[A any](in <-chan A, op Op[A], k int) *setup[A] {
 }
 
 
+// `get` returns a new node index.
 func (S *setup[A]) get() tree {
     if S.top == 0 {
-        // No reusables nodes.  Create new ones.
+        // No reusables tree nodes.  Create new ones.
         k := len(S.nodes)
         S.nodes = append(S.nodes, make([]node[A], k)...)
         S.recycles = append(S.recycles, make([]tree, k)...)
+        // Newly created nodes are reusables.
         S.top = k
         for i, j := 0, k; i < k; i, j = i + 1, j + 1 {
             S.recycles[i] = tree(j)
@@ -60,14 +62,13 @@ func (S *setup[A]) get() tree {
     S.top--
     t := S.recycles[S.top]
 
-    // Recycle children if they are not leafes.
+    // Recycle children if they are not leafs.
     n := S.nodes[t]
     if n.left < tree(len(S.nodes)) {
         S.recycles[S.top] = n.left
         S.top++
         S.nodes[t].left = leaf
     }
-
     if n.right < tree(len(S.nodes)) {
         S.recycles[S.top] = n.right
         S.top++
@@ -77,6 +78,7 @@ func (S *setup[A]) get() tree {
     return t
 }
 
+// `put` marks the node index `t` as reusable.
 func (S *setup[A]) put(t tree) {
     if t < tree(len(S.nodes)) {
         // If the tree is not a leaf, recycle it.
