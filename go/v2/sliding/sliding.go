@@ -58,24 +58,11 @@ type label[A any] struct {
     aggregation option[A] // aggregated value [from..to]; maybe none
 }
 
-// `tree` represents a binary tree where the nodes may carry the aggregated
-// value of the subtrees.
-//type tree[A any] struct {
-//    data  label[A] // aggregated value
-//    left  *tree[A] // left child
-//    right *tree[A] // right child
-//}
-
 
 // Tree constructors.
 
-// `leaf` returns a leaf.
-//func (S *setup[A]) leaf() tree {
-//    return leaf
-//}
-
 // `singleton` returns the tree with the aggregated value `x` at index `i`.
-func (S *setup[A]) singleton[A any](i int, x A) tree {
+func (S *setup[A]) singleton(i int, x A) tree {
     t := S.get()
     S.nodes[t].data = label[A]{from: i, to: i, aggregation: some(x)}
     return t
@@ -85,7 +72,7 @@ func (S *setup[A]) singleton[A any](i int, x A) tree {
 // `op(t1.aggregation, t2.aggregation)`.  `t1` is discharged and becomes the
 // left child and `t2` becomes the right child.  If either tree is a leaf the
 // other is returned as is.
-func (S *setup[option[A]]) combine(t1, t2 tree) tree {
+func (S *setup[A]) combine(t1, t2 tree) tree {
     switch {
     case S.isLeaf(t1):
         return t2
@@ -93,12 +80,15 @@ func (S *setup[option[A]]) combine(t1, t2 tree) tree {
         return t1
     default:
         t := S.get()
-        S.nodes[t].data = label[A]{
-            from:        S.nodes[t1].data.from,
-            to:          S.nodes[t2].data.to,
-            aggregation: S.op(S.nodes[t1].data.aggregation, S.nodes[t2].data.aggregation),
+        S.nodes[t] = node[A]{
+            data: label[A]{
+                from:        S.nodes[t1].data.from,
+                to:          S.nodes[t2].data.to,
+                aggregation: S.op(S.nodes[t1].data.aggregation, S.nodes[t2].data.aggregation),
+            },
+            left:  S.discharge(t1),
+            right: t2,
         }
-        S.nodes[t].left, S.nodes[t].right = discharge(t1), t2
         return t
     }
 }
@@ -180,15 +170,21 @@ func (S *setup[A]) news(i, n int, acc tree) (tree, bool) {
 func (S *setup[A]) reusables(t tree, i int, acc tree) tree {
     for {
         if i > S.rightIndex(t) {
+            S.put(t)
             return acc
         }
         if i == S.leftIndex(t) {
             return S.combine(t, acc)
         }
         if t1, t2 := S.children(t); i >= S.leftIndex(t2) {
+            S.nodes[t].right = leaf
+            S.put(t)
+
             t = t2 // tail call: reusables(op, t2, l, acc)
-            S.put(t1)
         } else {
+            S.nodes[t].left, S.nodes[t].right = leaf, leaf
+            S.put(t)
+
             acc = S.combine(t2, acc)
             t = t1 // tail call: reusables(op, t1, l, acc)
         }
@@ -199,7 +195,7 @@ func (S *setup[A]) reusables(t tree, i int, acc tree) tree {
 // tree by aggregating the elements in the window `w` with the operation `op`
 // and true on success, or a leaf and false if the input channel was closed
 // before all elements within the window `w` were received.
-func (S setup[A]) slide(t tree, w Window) (tree, bool) {
+func (S *setup[A]) slide(t tree, w Window) (tree, bool) {
     from, to := max(w.Left, 1 + S.rightIndex(t)), w.Right
 
     // Skip elements that are after the previous window and before the current
@@ -247,8 +243,8 @@ func (S *setup[A]) skip(k int) bool {
 //           conditions (i.e., windows always move to the right):
 //           0 <= l0 <= l1 <= ...  and  0 <= r0 <= r1 <= ...  and  li <= ri
 func SlidingWindow[A any](in <-chan A, out chan<- A, op Op[A], next Next[Window]) {
-    S := newSetup(in, op, l)
-    t := leaf
+    S := newSetup(in, op, 2096)
+    t := tree(leaf)
 
     for {
         // Get next window.

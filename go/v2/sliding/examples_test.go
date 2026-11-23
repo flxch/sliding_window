@@ -2,7 +2,7 @@ package sliding_test
 
 import (
     "fmt"
-    "github.com/flxch/sliding_window/go/sliding/v2"
+    "github.com/flxch/sliding_window/go/v2/sliding"
 )
 
 

@@ -12,7 +12,7 @@ import (
     "slices"
     "time"
 
-    "github.com/flxch/sliding_window/go/sliding/v2"
+    "github.com/flxch/sliding_window/go/v2/sliding"
 )
 
 

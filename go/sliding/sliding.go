@@ -77,8 +77,8 @@ func leaf[A any]() *tree[A] {
 func singleton[A any](i int, x A) *tree[A] {
     return &tree[A]{
         data:  label[A]{from: i, to: i, aggregation: some(x)},
-        left:  nil,
-        right: nil,
+        left:  leaf[A](),
+        right: leaf[A](),
     }
 }
 

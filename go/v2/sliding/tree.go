@@ -10,65 +10,77 @@ const (
 )
 
 
-type tree uint32
+type tree uint32 // index to the node that is the tree's root
 
-type node[A any] {
-    left  tree
-    right tree
-    data  label[A]
+type node[A any] struct {
+    left  tree     // left child
+    right tree     // right child
+    data  label[A] // aggregated value
 }
 
 type setup[A any] struct {
     in        <-chan A
     op        Op[option[A]]
-    nodes     []node[A]{}
-    reusables []tree
+    nodes     []node[A]
+    recycles  []tree        // nodes that are currently unused
+    top       int
 }
 
 
-type newSetup[A any](in <-chan A, op Op[A], k int) *setup[A] {
-    t := setup[A]{
-        in:        in,
-        op:        lift(op),
-        nodes:     make([]nodes[A], k),
-        reusables: make([]tree, k),
+func newSetup[A any](in <-chan A, op Op[A], k int) *setup[A] {
+    S := setup[A]{
+        in:       in,
+        op:       lift(op),
+        nodes:    make([]node[A], k),
+        recycles: make([]tree, k),
+        top:      k,
     }
     // Every node is reusable for the empty tree.
     for i := 0; i < k; i++ {
-        resuables[i] = tree(i)
-        t.nodes[i].left, t.nodes[i].right = leaf, leaf
+        S.recycles[i] = tree(i)
+        S.nodes[i].left, S.nodes[i].right = leaf, leaf
     }
-    return &t
+    return &S
 }
 
 
-func (t *setup[A]) get() tree {
-    if len(reusables) == 0 {
+func (S *setup[A]) get() tree {
+    if S.top == 0 {
         // No reusables nodes.  Create new ones.
-        k := len(t.nodes)
-        t.nodes = append(t.nodes, make([]node[A], k)...)
-        t.reusables = append(t.nodes, make([]tree, k)...)
-        for i, j := 0, k; i < k; i++, j++ {
-            resuables[i] = tree(j)
-            t.nodes[j].left, t.nodes[j].right = leaf
+        k := len(S.nodes)
+        S.nodes = append(S.nodes, make([]node[A], k)...)
+        S.recycles = append(S.recycles, make([]tree, k)...)
+        S.top = k
+        for i, j := 0, k; i < k; i, j = i + 1, j + 1 {
+            S.recycles[i] = tree(j)
+            S.nodes[j].left, S.nodes[j].right = leaf, leaf
         }
     }
 
-    k := len(t.reusables)
-    n := t.reusables[k - 1]
-    t.reusables = t.reusables[:k-1]
+    S.top--
+    t := S.recycles[S.top]
 
-    // Make children reusable nodes if they are not leafes.
-    t.put(n.left)
-    t.put(n.right)
+    // Recycle children if they are not leafes.
+    n := S.nodes[t]
+    if n.left < tree(len(S.nodes)) {
+        S.recycles[S.top] = n.left
+        S.top++
+        S.nodes[t].left = leaf
+    }
 
-    n.left, n.right = leaf, leaf
-    return n
+    if n.right < tree(len(S.nodes)) {
+        S.recycles[S.top] = n.right
+        S.top++
+        S.nodes[t].right = leaf
+    }
+
+    return t
 }
 
-func (t *setup[A]) put(n tree) {
-    if n < len(t.nodes) {
-        // If the node is not a leaf, make it reusable node.
-        t.reusables = append(t.reusables, n)
+func (S *setup[A]) put(t tree) {
+    if t < tree(len(S.nodes)) {
+        // If the tree is not a leaf, recycle it.
+        S.recycles[S.top] = t
+        S.top++
     }
 }
