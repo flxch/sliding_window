@@ -22,7 +22,7 @@ type setup[A any] struct {
     in        <-chan A
     op        Op[option[A]]
     nodes     []node[A]
-    recycles  []tree        // nodes that are currently unused
+    recycles  []tree        // node indexes that are currently unused
     top       int
 }
 
@@ -42,6 +42,17 @@ func newSetup[A any](in <-chan A, op Op[A], k int) *setup[A] {
     }
     return &S
 }
+
+
+func (S *setup[A]) cleanup() {
+    for i := 0; i < S.top; i++ {
+        //S.nodes[i].data = none[A]()
+        S.put(S.nodes[i].left)
+        S.put(S.nodes[i].right)
+        S.nodes[i].left, S.nodes[i].right = leaf, leaf
+    }
+}
+
 
 
 // `get` returns a new node index.
